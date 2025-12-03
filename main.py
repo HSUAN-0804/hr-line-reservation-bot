@@ -12,10 +12,10 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 from openai import OpenAI
 
-# ===== Àô¹ÒÅÜ¼Æ =====
+# ===== ç’°å¢ƒè®Šæ•¸ =====
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-GAS_BASE_URL        = os.getenv("GAS_BASE_URL")  # §Aªº GAS WebApp URL¡A¨Ò¦p https://script.google.com/.../exec
+GAS_BASE_URL        = os.getenv("GAS_BASE_URL")  # ä½ çš„ GAS WebApp URLï¼Œä¾‹å¦‚ https://script.google.com/.../exec
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_TOKEN)
@@ -25,7 +25,7 @@ client       = OpenAI(api_key=OPENAI_API_KEY)
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# ===== ©I¥s GAS WebApp =====
+# ===== å‘¼å« GAS WebApp =====
 def gas_get(action, params=None):
     params = params or {}
     params["action"] = action
@@ -40,11 +40,11 @@ def gas_post(action, payload):
     r.raise_for_status()
     return r.json()
 
-# ===== ¹w¬ù¬yµ{Â²³æª¬ºA¡]Demo¡G¦s¦b°O¾ĞÅé¡^ =====
+# ===== é ç´„æµç¨‹ç°¡å–®ç‹€æ…‹ï¼ˆDemoï¼šå­˜åœ¨è¨˜æ†¶é«”ï¼‰ =====
 USER_STATE = {}
 # state: idle / waiting_date / waiting_time / waiting_info / confirming
 
-# ===== Webhook ¤J¤f =====
+# ===== Webhook å…¥å£ =====
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -56,35 +56,35 @@ def callback():
         abort(400)
     return "OK"
 
-# ===== ¥D¨Æ¥ó³B²z =====
+# ===== ä¸»äº‹ä»¶è™•ç† =====
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event: MessageEvent):
     user_id = event.source.user_id
     text    = event.message.text.strip()
 
-    # Â²³æ«ü¥O
-    if text in ("¹w¬ù", "§Ú­n¹w¬ù"):
+    # ç°¡å–®æŒ‡ä»¤
+    if text in ("é ç´„", "æˆ‘è¦é ç´„"):
         start_reservation_flow(user_id, event.reply_token)
         return
-    if text in ("¬d¹w¬ù", "§Úªº¹w¬ù"):
+    if text in ("æŸ¥é ç´„", "æˆ‘çš„é ç´„"):
         show_my_reservations(user_id, event.reply_token)
         return
 
-    # ­Y¦b¹w¬ù¬yµ{¤¤¡AÀu¥ı³B²z¹w¬ù
+    # è‹¥åœ¨é ç´„æµç¨‹ä¸­ï¼Œå„ªå…ˆè™•ç†é ç´„
     state = USER_STATE.get(user_id)
     if state and state.get("step") != "idle":
         handle_reservation_flow(user_id, text, event.reply_token)
         return
 
-    # ¨ä¥L¥áµ¹ OpenAI ´¼¼z«ÈªA
+    # å…¶ä»–ä¸Ÿçµ¦ OpenAI æ™ºæ…§å®¢æœ
     reply_ai_chat(user_id, text, event.reply_token)
 
-# ===== ´¼¼z«ÈªA¡GOpenAI =====
+# ===== æ™ºæ…§å®¢æœï¼šOpenAI =====
 def reply_ai_chat(user_id, user_text, reply_token):
-    system_prompt = """§A¬O H.R ¿OÃÀ¾÷¨®ºë«~§ï¸Ë©±ªº LINE ´¼¼z«ÈªA¡u¤p¼ä¡v¡C
-»¡¸Ü¤f§k¡G¬¡¼â¡B¦³·Å«×¡B±M·~¡A¥ş³¡¨Ï¥ÎÁcÅé¤¤¤å¡A¤£­n¨Ï¥Îªí±¡²Å¸¹¡C
-§A¥i¥H¦^µªÃö©ó H.R ¿OÃÀªºÀç·~®É¶¡¡B¹w¬ùª`·N¨Æ¶µ¡B§ï¸Ë¬ÛÃöªº±`¨£°İÃD¡C
-¦pªG¨Ï¥ÎªÌ·Q¹w¬ù¡A½Ğ¤Ş¾É¥L¿é¤J¡u¹w¬ù¡v¡A±Ò°Ê¹w¬ù¬yµ{¡C
+    system_prompt = """ä½ æ˜¯ H.R ç‡ˆè—æ©Ÿè»Šç²¾å“æ”¹è£åº—çš„ LINE æ™ºæ…§å®¢æœã€Œå°æ½”ã€ã€‚
+èªªè©±å£å»ï¼šæ´»æ½‘ã€æœ‰æº«åº¦ã€å°ˆæ¥­ï¼Œå…¨éƒ¨ä½¿ç”¨ç¹é«”ä¸­æ–‡ï¼Œä¸è¦ä½¿ç”¨è¡¨æƒ…ç¬¦è™Ÿã€‚
+ä½ å¯ä»¥å›ç­”é—œæ–¼ H.R ç‡ˆè—çš„ç‡Ÿæ¥­æ™‚é–“ã€é ç´„æ³¨æ„äº‹é …ã€æ”¹è£ç›¸é—œçš„å¸¸è¦‹å•é¡Œã€‚
+å¦‚æœä½¿ç”¨è€…æƒ³é ç´„ï¼Œè«‹å¼•å°ä»–è¼¸å…¥ã€Œé ç´„ã€ï¼Œå•Ÿå‹•é ç´„æµç¨‹ã€‚
 """
 
     completion = client.chat.completions.create(
@@ -97,7 +97,7 @@ def reply_ai_chat(user_id, user_text, reply_token):
     reply_text = completion.choices[0].message.content.strip()
     line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
 
-# ===== ¹w¬ù¬yµ{ =====
+# ===== é ç´„æµç¨‹ =====
 def start_reservation_flow(user_id, reply_token):
     USER_STATE[user_id] = {
         "step": "waiting_date",
@@ -105,7 +105,7 @@ def start_reservation_flow(user_id, reply_token):
     }
     line_bot_api.reply_message(
         reply_token,
-        TextSendMessage(text="¦nªº¡ã¨ÓÀ°§A¦w±Æ¹w¬ù®É¶¡¡C\n½Ğ¥ı¿é¤J¤é´Á¡A¨Ò¦p¡G2025-12-03")
+        TextSendMessage(text="å¥½çš„ï½ä¾†å¹«ä½ å®‰æ’é ç´„æ™‚é–“ã€‚\nè«‹å…ˆè¼¸å…¥æ—¥æœŸï¼Œä¾‹å¦‚ï¼š2025-12-03")
     )
 
 def handle_reservation_flow(user_id, text, reply_token):
@@ -120,7 +120,7 @@ def handle_reservation_flow(user_id, text, reply_token):
         USER_STATE[user_id] = {"step": "waiting_time", "reservation": data}
         line_bot_api.reply_message(
             reply_token,
-            TextSendMessage(text=f"¹w­p¤é´Á¡G{date_str}\n½Ğ¿é¤J¹w­p®É¶¡¡A¨Ò¦p¡G14:00")
+            TextSendMessage(text=f"é è¨ˆæ—¥æœŸï¼š{date_str}\nè«‹è¼¸å…¥é è¨ˆæ™‚é–“ï¼Œä¾‹å¦‚ï¼š14:00")
         )
         return
 
@@ -130,16 +130,16 @@ def handle_reservation_flow(user_id, text, reply_token):
         USER_STATE[user_id] = {"step": "waiting_info", "reservation": data}
         line_bot_api.reply_message(
             reply_token,
-            TextSendMessage(text="¦nªº¡ã¦A½Ğ§A¿é¤J¡G\n1. ©m¦W\n2. ³sµ¸¹q¸Ü\n3. ¨®ºØ¡]¨Ò¦p¡GJETSL¡^\n¥i¥H¡u©m¦W/¹q¸Ü/¨®ºØ¡v³o¼Ë¿é¤J¡C")
+            TextSendMessage(text="å¥½çš„ï½å†è«‹ä½ è¼¸å…¥ï¼š\n1. å§“å\n2. é€£çµ¡é›»è©±\n3. è»Šç¨®ï¼ˆä¾‹å¦‚ï¼šJETSLï¼‰\nå¯ä»¥ã€Œå§“å/é›»è©±/è»Šç¨®ã€é€™æ¨£è¼¸å…¥ã€‚")
         )
         return
 
     if step == "waiting_info":
-        parts = text.replace("¡ş", "/").split("/")
+        parts = text.replace("ï¼", "/").split("/")
         if len(parts) < 3:
             line_bot_api.reply_message(
                 reply_token,
-                TextSendMessage(text="®æ¦¡¤£¤Ó¹ï¡ã½Ğ¥Î¡u©m¦W/¹q¸Ü/¨®ºØ¡v³o¼Ë¿é¤J³á¡I")
+                TextSendMessage(text="æ ¼å¼ä¸å¤ªå°ï½è«‹ç”¨ã€Œå§“å/é›»è©±/è»Šç¨®ã€é€™æ¨£è¼¸å…¥å–”ï¼")
             )
             return
         name  = parts[0].strip()
@@ -152,28 +152,28 @@ def handle_reservation_flow(user_id, text, reply_token):
 
         USER_STATE[user_id] = {"step": "confirming", "reservation": data}
         msg = (
-          "½ĞÀ°§Ú½T»{¤@¤U¹w¬ù¸ê®Æ¡G\n"
-          f"¤é´Á¡G{data['date']}\n"
-          f"®É¶¡¡G{data['time']}\n"
-          f"©m¦W¡G{name}\n"
-          f"¹q¸Ü¡G{phone}\n"
-          f"¨®ºØ¡G{model}\n\n"
-          "¦pªG³£¨S°İÃD¡A½Ğ¦^ÂĞ¡u½T»{¹w¬ù¡v¡C"
+          "è«‹å¹«æˆ‘ç¢ºèªä¸€ä¸‹é ç´„è³‡æ–™ï¼š\n"
+          f"æ—¥æœŸï¼š{data['date']}\n"
+          f"æ™‚é–“ï¼š{data['time']}\n"
+          f"å§“åï¼š{name}\n"
+          f"é›»è©±ï¼š{phone}\n"
+          f"è»Šç¨®ï¼š{model}\n\n"
+          "å¦‚æœéƒ½æ²’å•é¡Œï¼Œè«‹å›è¦†ã€Œç¢ºèªé ç´„ã€ã€‚"
         )
         line_bot_api.reply_message(reply_token, TextSendMessage(text=msg))
         return
 
     if step == "confirming":
-        if text.strip() not in ("½T»{", "½T»{¹w¬ù", "ok", "OK"):
+        if text.strip() not in ("ç¢ºèª", "ç¢ºèªé ç´„", "ok", "OK"):
             line_bot_api.reply_message(
                 reply_token,
-                TextSendMessage(text="¦pªG­n°e¥X¹w¬ù¡A½Ğ¦^ÂĞ¡u½T»{¹w¬ù¡v¡C\n­Y­n­×§ï¤é´Á©Î®É¶¡¡Aª½±µ¿é¤J·sªº¤é´Á©Î®É¶¡§Y¥i¡C")
+                TextSendMessage(text="å¦‚æœè¦é€å‡ºé ç´„ï¼Œè«‹å›è¦†ã€Œç¢ºèªé ç´„ã€ã€‚\nè‹¥è¦ä¿®æ”¹æ—¥æœŸæˆ–æ™‚é–“ï¼Œç›´æ¥è¼¸å…¥æ–°çš„æ—¥æœŸæˆ–æ™‚é–“å³å¯ã€‚")
             )
             return
 
         data = state["reservation"]
         try:
-            # ¥ı¸j©w LINE userId ¨ìÅU«È¡]¥Î¹q¸Ü·í key¡^
+            # å…ˆç¶å®š LINE userId åˆ°é¡§å®¢ï¼ˆç”¨é›»è©±ç•¶ keyï¼‰
             try:
                 gas_post("bindLineCustomer", {
                     "line_user_id": user_id,
@@ -183,7 +183,7 @@ def handle_reservation_flow(user_id, text, reply_token):
             except Exception as bind_err:
                 logging.warning(f"bindLineCustomer error: {bind_err}")
 
-            # ¯u¥¿«Ø¥ß¹w¬ù
+            # çœŸæ­£å»ºç«‹é ç´„
             payload = {
                 "line_user_id": user_id,
                 "name":   data["name"],
@@ -193,19 +193,19 @@ def handle_reservation_flow(user_id, text, reply_token):
                 "date":   data["date"],
                 "start_time": data["time"],
                 "end_time":   "",
-                "service_type": "LINE ¹w¬ù",
+                "service_type": "LINE é ç´„",
                 "technician":   "",
-                "remark":       "LINEBOT ¦Û°Ê¹w¬ù",
+                "remark":       "LINEBOT è‡ªå‹•é ç´„",
                 "source":       "LINE"
             }
             res = gas_post("reservationsCreate", payload)
             if res.get("ok"):
-                msg = "¹w¬ù¤w°e¥X¡A·PÁÂ§A¡ã\n¦pªG¤§«á»İ­n½Õ¾ã®É¶¡¡A¤]¥i¥H¦A¶Ç°T®§µ¹§Ú¡C"
+                msg = "é ç´„å·²é€å‡ºï¼Œæ„Ÿè¬ä½ ï½\nå¦‚æœä¹‹å¾Œéœ€è¦èª¿æ•´æ™‚é–“ï¼Œä¹Ÿå¯ä»¥å†å‚³è¨Šæ¯çµ¦æˆ‘ã€‚"
             else:
-                msg = "¹w¬ù°e¥X®É¹J¨ì°İÃD QQ\n¥i¥Hµy«á¦A¸Õ¤@¦¸¡A©Îª½±µ¯d¨¥µ¹§Ú­Ì¤H¤u³B²z¡C"
+                msg = "é ç´„é€å‡ºæ™‚é‡åˆ°å•é¡Œ QQ\nå¯ä»¥ç¨å¾Œå†è©¦ä¸€æ¬¡ï¼Œæˆ–ç›´æ¥ç•™è¨€çµ¦æˆ‘å€‘äººå·¥è™•ç†ã€‚"
         except Exception as e:
             logging.exception("create reservation error")
-            msg = "¹w¬ù°e¥X®É¹J¨ì°İÃD QQ\n¥i¥H¥ı§â¸ê®ÆºI¹Ïµ¹§Ú­Ì¡A©Îµy«á¦A¸Õ¤@¦¸¡C"
+            msg = "é ç´„é€å‡ºæ™‚é‡åˆ°å•é¡Œ QQ\nå¯ä»¥å…ˆæŠŠè³‡æ–™æˆªåœ–çµ¦æˆ‘å€‘ï¼Œæˆ–ç¨å¾Œå†è©¦ä¸€æ¬¡ã€‚"
 
         USER_STATE[user_id] = {"step": "idle", "reservation": {}}
         line_bot_api.reply_message(reply_token, TextSendMessage(text=msg))
@@ -214,29 +214,29 @@ def handle_reservation_flow(user_id, text, reply_token):
     USER_STATE[user_id] = {"step": "idle", "reservation": {}}
     line_bot_api.reply_message(
         reply_token,
-        TextSendMessage(text="§Ú­Ì­«·s¨Ó¤@¦¸¡G¦pªG­n¹w¬ù¡A½Ğ¿é¤J¡u¹w¬ù¡v¡C")
+        TextSendMessage(text="æˆ‘å€‘é‡æ–°ä¾†ä¸€æ¬¡ï¼šå¦‚æœè¦é ç´„ï¼Œè«‹è¼¸å…¥ã€Œé ç´„ã€ã€‚")
     )
 
-# ===== ¬d¸ß§Úªº¹w¬ù¡]¥ı°µÂ²³æª©¡G½T»{¦³¸j©w¸ê®Æ¡^ =====
+# ===== æŸ¥è©¢æˆ‘çš„é ç´„ï¼ˆå…ˆåšç°¡å–®ç‰ˆï¼šç¢ºèªæœ‰ç¶å®šè³‡æ–™ï¼‰ =====
 def show_my_reservations(user_id, reply_token):
     try:
         res = gas_get("resolveLineCustomer", {"line_user_id": user_id})
         if not res.get("ok"):
             line_bot_api.reply_message(
               reply_token,
-              TextSendMessage(text="¥Ø«eÁÙ¨S¦³¸j©w§Aªº¸ê®Æ³á¡I\n²Ä¤@¦¸¹w¬ù®É·|À°§A¦Û°Ê«Ø¥ß¡C")
+              TextSendMessage(text="ç›®å‰é‚„æ²’æœ‰ç¶å®šä½ çš„è³‡æ–™å–”ï¼\nç¬¬ä¸€æ¬¡é ç´„æ™‚æœƒå¹«ä½ è‡ªå‹•å»ºç«‹ã€‚")
             )
             return
 
         line_bot_api.reply_message(
           reply_token,
-          TextSendMessage(text="¤w¸gÀ°§A¸j©wÅU«È¸ê®Æ¡A¤§«á§Ú¥i¥HÀ°§A¬d¸ß¹w¬ù»P®ø¶O¬ö¿ı¡ã\n¡]¸Ô²Ó¬d¸ß¥\¯à§Ú­Ì¤U¤@¨B¦A¥[¡^")
+          TextSendMessage(text="å·²ç¶“å¹«ä½ ç¶å®šé¡§å®¢è³‡æ–™ï¼Œä¹‹å¾Œæˆ‘å¯ä»¥å¹«ä½ æŸ¥è©¢é ç´„èˆ‡æ¶ˆè²»ç´€éŒ„ï½\nï¼ˆè©³ç´°æŸ¥è©¢åŠŸèƒ½æˆ‘å€‘ä¸‹ä¸€æ­¥å†åŠ ï¼‰")
         )
     except Exception as e:
         logging.exception("show reservations error")
         line_bot_api.reply_message(
           reply_token,
-          TextSendMessage(text="¬d¸ß®É¹J¨ì¤@ÂI°İÃD¡Aµ¥¤@¤U¦A¸Õ¸Õ¬İ¡ã")
+          TextSendMessage(text="æŸ¥è©¢æ™‚é‡åˆ°ä¸€é»å•é¡Œï¼Œç­‰ä¸€ä¸‹å†è©¦è©¦çœ‹ï½")
         )
 
 if __name__ == "__main__":
