@@ -1,3 +1,4 @@
+GAS_ENDPOINT = "https://script.google.com/macros/s/https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec"
 import os
 import json
 import logging
@@ -15,7 +16,7 @@ from openai import OpenAI
 # ===== 環境變數 =====
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-GAS_BASE_URL        = os.getenv("GAS_BASE_URL")  # 你的 GAS WebApp URL，例如 https://script.google.com/.../exec
+GAS_BASE_URL        = os.getenv("https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec")  # 你的 GAS WebApp URL，例如 https://script.google.com/.../exec
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_TOKEN)
@@ -24,6 +25,31 @@ client       = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
+import requests
+import datetime
+
+GAS_ENDPOINT = "https://script.google.com/macros/s/你的POS專案EXEC URL/exec"
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_id = event.source.user_id
+    text = event.message.text
+
+    # 1) 丟一份 log 給 GAS（寫進原本那本 SHEET 的 line_messages）
+    try:
+        payload = {
+            "line_user_id": user_id,
+            "text": text,
+            "timestamp": datetime.datetime.utcnow().isoformat()
+        }
+        params = {"action": "lineLog"}
+        requests.post(GAS_ENDPOINT, params=params, json=payload, timeout=3)
+    except Exception as e:
+        print("log to GAS error:", e)
+
+    # 2) 下面照原本邏輯回覆訊息
+    #    ...
+    #    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
 # ===== 呼叫 GAS WebApp =====
 def gas_get(action, params=None):
@@ -242,3 +268,4 @@ def show_my_reservations(user_id, reply_token):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000)) or 5000
     app.run(host="0.0.0.0", port=port)
+
