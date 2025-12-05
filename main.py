@@ -37,14 +37,15 @@ def gas_get(action, params=None):
     r.raise_for_status()
     return r.json()
 
-def gas_post(action, payload):
+def gas_get(action, params=None):
     if not GAS_BASE_URL:
         raise RuntimeError("GAS_BASE_URL not set")
-    data = {"action": action}
-    data.update(payload)
-    r = requests.post(GAS_BASE_URL, json=data, timeout=10)
+    params = params or {}
+    params["action"] = action          # 這裡本來就放在 query string，OK
+    r = requests.get(GAS_BASE_URL, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
+
 
 # ===== 預約流程簡單狀態（Demo：存在記憶體） =====
 USER_STATE = {}
@@ -266,3 +267,4 @@ def show_my_reservations(user_id, reply_token):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000)) or 5000
     app.run(host="0.0.0.0", port=port)
+
