@@ -1,4 +1,3 @@
-GAS_ENDPOINT = "https://script.google.com/macros/s/https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec"
 import os
 import json
 import logging
@@ -16,7 +15,9 @@ from openai import OpenAI
 # ===== 環境變數 =====
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 LINE_CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-GAS_BASE_URL        = os.getenv("https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec")  # 你的 GAS WebApp URL，例如 https://script.google.com/.../exec
+# 建議在 Render 的環境變數加一個 GAS_BASE_URL
+# 值填： https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec
+GAS_BASE_URL        = os.getenv("GAS_BASE_URL") or "https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec"
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_TOKEN)
@@ -25,34 +26,11 @@ client       = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
-import requests
-import datetime
 
-GAS_ENDPOINT = "https://script.google.com/macros/s/你的POS專案EXEC URL/exec"
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text
-
-    # 1) 丟一份 log 給 GAS（寫進原本那本 SHEET 的 line_messages）
-    try:
-        payload = {
-            "line_user_id": user_id,
-            "text": text,
-            "timestamp": datetime.datetime.utcnow().isoformat()
-        }
-        params = {"action": "lineLog"}
-        requests.post(GAS_ENDPOINT, params=params, json=payload, timeout=3)
-    except Exception as e:
-        print("log to GAS error:", e)
-
-    # 2) 下面照原本邏輯回覆訊息
-    #    ...
-    #    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-
-# ===== 呼叫 GAS WebApp =====
+# ===== 呼叫 GAS WebApp 共用函式 =====
 def gas_get(action, params=None):
+    if not GAS_BASE_URL:
+        raise RuntimeError("GAS_BASE_URL not set")
     params = params or {}
     params["action"] = action
     r = requests.get(GAS_BASE_URL, params=params, timeout=10)
@@ -60,6 +38,8 @@ def gas_get(action, params=None):
     return r.json()
 
 def gas_post(action, payload):
+    if not GAS_BASE_URL:
+        raise RuntimeError("GAS_BASE_URL not set")
     data = {"action": action}
     data.update(payload)
     r = requests.post(GAS_BASE_URL, json=data, timeout=10)
@@ -82,13 +62,23 @@ def callback():
         abort(400)
     return "OK"
 
-# ===== 主事件處理 =====
+# ===== 主事件處理（唯一的 handle_message） =====
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event: MessageEvent):
     user_id = event.source.user_id
     text    = event.message.text.strip()
 
-    # 簡單指令
+    # ① 一進來就丟一份 log 給 GAS（寫進原本那本 SHEET 的 line_messages）
+    try:
+        gas_post("lineLog", {
+            "line_user_id": user_id,
+            "text": text,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        logging.warning(f"log to GAS error: {e}")
+
+    # ② 簡單指令：預約 / 查預約
     if text in ("預約", "我要預約"):
         start_reservation_flow(user_id, event.reply_token)
         return
@@ -96,13 +86,13 @@ def handle_message(event: MessageEvent):
         show_my_reservations(user_id, event.reply_token)
         return
 
-    # 若在預約流程中，優先處理預約
+    # ③ 若在預約流程中，優先處理預約
     state = USER_STATE.get(user_id)
     if state and state.get("step") != "idle":
         handle_reservation_flow(user_id, text, event.reply_token)
         return
 
-    # 其他丟給 OpenAI 智慧客服
+    # ④ 其他丟給 OpenAI 智慧客服
     reply_ai_chat(user_id, text, event.reply_token)
 
 # ===== 智慧客服：OpenAI =====
@@ -123,7 +113,7 @@ def reply_ai_chat(user_id, user_text, reply_token):
     reply_text = completion.choices[0].message.content.strip()
     line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
 
-# ===== 預約流程 =====
+# ===== 預約流程：啟動 =====
 def start_reservation_flow(user_id, reply_token):
     USER_STATE[user_id] = {
         "step": "waiting_date",
@@ -134,11 +124,13 @@ def start_reservation_flow(user_id, reply_token):
         TextSendMessage(text="好的～來幫你安排預約時間。\n請先輸入日期，例如：2025-12-03")
     )
 
+# ===== 預約流程：每一步處理 =====
 def handle_reservation_flow(user_id, text, reply_token):
     state = USER_STATE.get(user_id) or {"step": "idle", "reservation": {}}
     step  = state.get("step")
     data  = state.get("reservation", {})
 
+    # 輸入日期
     if step == "waiting_date":
         date_str = text.strip()
         data["date"] = date_str
@@ -150,9 +142,11 @@ def handle_reservation_flow(user_id, text, reply_token):
         )
         return
 
+    # 輸入時間
     if step == "waiting_time":
         time_str = text.strip()
         data["time"] = time_str
+
         USER_STATE[user_id] = {"step": "waiting_info", "reservation": data}
         line_bot_api.reply_message(
             reply_token,
@@ -160,6 +154,7 @@ def handle_reservation_flow(user_id, text, reply_token):
         )
         return
 
+    # 輸入基本資料：姓名/電話/車種
     if step == "waiting_info":
         parts = text.replace("／", "/").split("/")
         if len(parts) < 3:
@@ -189,6 +184,7 @@ def handle_reservation_flow(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, TextSendMessage(text=msg))
         return
 
+    # 確認送出
     if step == "confirming":
         if text.strip() not in ("確認", "確認預約", "ok", "OK"):
             line_bot_api.reply_message(
@@ -237,13 +233,14 @@ def handle_reservation_flow(user_id, text, reply_token):
         line_bot_api.reply_message(reply_token, TextSendMessage(text=msg))
         return
 
+    # 其他狀況：重置流程
     USER_STATE[user_id] = {"step": "idle", "reservation": {}}
     line_bot_api.reply_message(
         reply_token,
         TextSendMessage(text="我們重新來一次：如果要預約，請輸入「預約」。")
     )
 
-# ===== 查詢我的預約（先做簡單版：確認有綁定資料） =====
+# ===== 查詢我的預約（目前先簡單確認有綁定） =====
 def show_my_reservations(user_id, reply_token):
     try:
         res = gas_get("resolveLineCustomer", {"line_user_id": user_id})
@@ -265,7 +262,7 @@ def show_my_reservations(user_id, reply_token):
           TextSendMessage(text="查詢時遇到一點問題，等一下再試試看～")
         )
 
+# ===== Flask 啟動 =====
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000)) or 5000
     app.run(host="0.0.0.0", port=port)
-
