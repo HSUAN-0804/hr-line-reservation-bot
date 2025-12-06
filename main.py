@@ -1,4 +1,4 @@
-# main.py - 文字 + 貼圖 + 對 GAS 發 {"action":"lineLog","body":...}
+# main.py - 乾淨版：文字 + 貼圖 + 記錄到 GAS
 
 import os
 import logging
@@ -37,7 +37,7 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # ✅ 給 GAS 用的 Web App URL（exec）
-# 建議在環境變數 GAS_LINE_LOG_URL 設定，如果懶得設也可以直接寫在預設值
+# 建議用環境變數 GAS_LINE_LOG_URL，如果懶得設，也可以直接把 URL 寫在預設值那裡
 GAS_LINE_LOG_URL = os.environ.get(
     "GAS_LINE_LOG_URL",
     ""  # 例如："https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec"
@@ -50,26 +50,16 @@ logging.basicConfig(level=logging.INFO)
 
 def log_to_gas(body: dict):
     """
-    用「你之前有成功寫入的格式」丟給 GAS：
-    {
-      "action": "lineLog",
-      "body": {...}
-    }
-    GAS 的 doPost 裡應該有類似：
-      const data = JSON.parse(e.postData.contents);
-      if (data.action === 'lineLog') appLineLog(data.body);
+    直接把 body 當 JSON POST 給 GAS，
+    GAS 那邊的 doPost 應該要做類似：
+    const data = JSON.parse(e.postData.contents); appLineLog(data)
     """
     if not GAS_LINE_LOG_URL:
         logging.warning("GAS_LINE_LOG_URL 未設定，略過記錄 log")
         return
 
-    payload = {
-        "action": "lineLog",
-        "body": body,
-    }
-
     try:
-        resp = requests.post(GAS_LINE_LOG_URL, json=payload, timeout=2)
+        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=2)
         logging.info("log_to_gas resp: %s", resp.text[:200])
     except Exception as e:
         logging.error("log_to_gas error: %s", e)
@@ -84,28 +74,21 @@ def log_from_event(
     sender: str = "user",
 ):
     """
-    把 LINE 事件轉成 appLineLog 需要的 body：
+    統一把 LINE 的事件轉成 appLineLog 需要的 JSON 格式：
     {
       "line_user_id": "...",
-      "type": "text" / "sticker",
+      "type": "text" 或 "sticker",
       "text": "...",
       "sticker_package_id": "...",
       "sticker_id": "...",
       "sender": "user" / "agent" / "bot",
-      "timestamp": "ISO8601",
-      "event_id": "xxxxxxxxxxxxxxxx"
+      "timestamp": "ISO8601"
     }
     """
     try:
         user_id = event.source.user_id
     except Exception:
         user_id = ""
-
-    # 事件 ID，給 GAS 做防重複
-    try:
-        event_id = event.id
-    except Exception:
-        event_id = None
 
     # LINE 的 timestamp 是毫秒
     try:
@@ -123,7 +106,6 @@ def log_from_event(
         "sticker_id": str(sticker_id) if sticker_id else "",
         "sender": sender,
         "timestamp": ts_iso,
-        "event_id": event_id,
     }
 
     log_to_gas(body)
@@ -134,6 +116,7 @@ def log_from_event(
 def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
     """
     呼叫 OpenAI，產生 H.R 燈藝小潔的回覆
+    （簡化版，可之後再加店家資料 / Google Sheet 等）
     """
     if not openai_client:
         return "目前暫時無法連線到 AI 伺服器，不好意思 >_<"
@@ -166,10 +149,14 @@ def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
 
 @app.route("/callback", methods=["POST"])
 def callback():
+    # 取得 X-Line-Signature header
     signature = request.headers.get("X-Line-Signature", "")
+
+    # 取得請求 body
     body = request.get_data(as_text=True)
     logging.info("Request body: " + body)
 
+    # 驗證與處理
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -184,12 +171,11 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_text = event.message.text
-    user_id = event.source.user_id
 
     # 1) 呼叫 OpenAI 產生小潔回覆
-    reply_text = generate_reply_from_openai(user_text, user_id=user_id)
+    reply_text = generate_reply_from_openai(user_text, user_id=event.source.user_id)
 
-    # 2) 回覆給使用者
+    # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
     try:
         line_bot_api.reply_message(
             event.reply_token,
@@ -198,7 +184,7 @@ def handle_text_message(event):
     except Exception as e:
         logging.error("回覆文字訊息失敗: %s", e)
 
-    # 3) 記錄使用者這句
+    # 3) 把「使用者這句話」記錄到 GAS / line_messages
     log_from_event(
         event,
         msg_type="text",
@@ -206,13 +192,13 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # 4) 記錄小潔的回覆
-    log_from_event(
-        event,
-        msg_type="text",
-        text=reply_text,
-        sender="bot",
-    )
+    # （如果你也想記錄小潔的回覆，可以額外再 log 一次，sender="bot"）
+    # log_from_event(
+    #     event,
+    #     msg_type="text",
+    #     text=reply_text,
+    #     sender="bot",
+    # )
 
 
 # ================== 事件處理：貼圖訊息 ==================
@@ -222,7 +208,7 @@ def handle_sticker_message(event):
     package_id = event.message.package_id
     sticker_id = event.message.sticker_id
 
-    # 1) 用文字回覆客人（不主動發貼圖，避免 400）
+    # 1) 回覆客人一段文字（不主動發貼圖，以免 400）
     reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
     try:
         line_bot_api.reply_message(
@@ -232,7 +218,7 @@ def handle_sticker_message(event):
     except Exception as e:
         logging.error("回覆貼圖訊息失敗: %s", e)
 
-    # 2) 記錄使用者貼圖
+    # 2) 把貼圖記錄到 GAS / line_messages
     log_from_event(
         event,
         msg_type="sticker",
@@ -247,4 +233,5 @@ def handle_sticker_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
