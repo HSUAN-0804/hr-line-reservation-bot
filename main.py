@@ -1,4 +1,4 @@
-# main.py - 乾淨版：文字 + 貼圖 + 記錄到 GAS（含 event_id）
+# main.py - 文字 + 貼圖 + 對 GAS 發 {"action":"lineLog","body":...}
 
 import os
 import logging
@@ -37,8 +37,7 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # ✅ 給 GAS 用的 Web App URL（exec）
-# 建議設在環境變數 GAS_LINE_LOG_URL
-# 如果懶得設，可以直接把 exec URL 寫在預設值：
+# 建議在環境變數 GAS_LINE_LOG_URL 設定，如果懶得設也可以直接寫在預設值
 GAS_LINE_LOG_URL = os.environ.get(
     "GAS_LINE_LOG_URL",
     ""  # 例如："https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec"
@@ -51,17 +50,26 @@ logging.basicConfig(level=logging.INFO)
 
 def log_to_gas(body: dict):
     """
-    直接把 body 當 JSON POST 給 GAS，
-    GAS 的 doPost 應該是類似：
+    用「你之前有成功寫入的格式」丟給 GAS：
+    {
+      "action": "lineLog",
+      "body": {...}
+    }
+    GAS 的 doPost 裡應該有類似：
       const data = JSON.parse(e.postData.contents);
-      appLineLog(data);
+      if (data.action === 'lineLog') appLineLog(data.body);
     """
     if not GAS_LINE_LOG_URL:
         logging.warning("GAS_LINE_LOG_URL 未設定，略過記錄 log")
         return
 
+    payload = {
+        "action": "lineLog",
+        "body": body,
+    }
+
     try:
-        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=2)
+        resp = requests.post(GAS_LINE_LOG_URL, json=payload, timeout=2)
         logging.info("log_to_gas resp: %s", resp.text[:200])
     except Exception as e:
         logging.error("log_to_gas error: %s", e)
@@ -76,7 +84,7 @@ def log_from_event(
     sender: str = "user",
 ):
     """
-    統一把 LINE 事件轉成 appLineLog 需要的 JSON 格式：
+    把 LINE 事件轉成 appLineLog 需要的 body：
     {
       "line_user_id": "...",
       "type": "text" / "sticker",
@@ -93,7 +101,7 @@ def log_from_event(
     except Exception:
         user_id = ""
 
-    # 事件 ID，用來在 GAS 端去重複
+    # 事件 ID，給 GAS 做防重複
     try:
         event_id = event.id
     except Exception:
@@ -126,7 +134,6 @@ def log_from_event(
 def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
     """
     呼叫 OpenAI，產生 H.R 燈藝小潔的回覆
-    （簡化版，可之後再加店家資料 / Google Sheet 等）
     """
     if not openai_client:
         return "目前暫時無法連線到 AI 伺服器，不好意思 >_<"
@@ -159,14 +166,10 @@ def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    # 取得 X-Line-Signature header
     signature = request.headers.get("X-Line-Signature", "")
-
-    # 取得請求 body
     body = request.get_data(as_text=True)
     logging.info("Request body: " + body)
 
-    # 驗證與處理
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -186,7 +189,7 @@ def handle_text_message(event):
     # 1) 呼叫 OpenAI 產生小潔回覆
     reply_text = generate_reply_from_openai(user_text, user_id=user_id)
 
-    # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
+    # 2) 回覆給使用者
     try:
         line_bot_api.reply_message(
             event.reply_token,
@@ -195,7 +198,7 @@ def handle_text_message(event):
     except Exception as e:
         logging.error("回覆文字訊息失敗: %s", e)
 
-    # 3) 把「使用者這句話」記錄到 GAS / line_messages
+    # 3) 記錄使用者這句
     log_from_event(
         event,
         msg_type="text",
@@ -203,7 +206,7 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # 4) 把「小潔的回覆」也記錄到 GAS（sender = bot）
+    # 4) 記錄小潔的回覆
     log_from_event(
         event,
         msg_type="text",
@@ -219,7 +222,7 @@ def handle_sticker_message(event):
     package_id = event.message.package_id
     sticker_id = event.message.sticker_id
 
-    # 1) 回覆客人一段文字（不主動發貼圖，避免 400）
+    # 1) 用文字回覆客人（不主動發貼圖，避免 400）
     reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
     try:
         line_bot_api.reply_message(
@@ -229,7 +232,7 @@ def handle_sticker_message(event):
     except Exception as e:
         logging.error("回覆貼圖訊息失敗: %s", e)
 
-    # 2) 把「使用者貼圖」記錄到 GAS / line_messages
+    # 2) 記錄使用者貼圖
     log_from_event(
         event,
         msg_type="sticker",
@@ -243,5 +246,5 @@ def handle_sticker_message(event):
 # ================== 主程式啟動 ==================
 
 if __name__ == "__main__":
-  port = int(os.environ.get("PORT", 5000))
-  app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
