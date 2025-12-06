@@ -176,16 +176,27 @@ def handle_text_message(event):
     # 1) 呼叫 OpenAI 產生小潔回覆
     reply_text = generate_reply_from_openai(user_text, user_id=user_id)
 
-    # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
-    try:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_text)
-        )
-    except Exception as e:
-        logging.error("回覆文字訊息失敗: %s", e)
+    reply_token = event.reply_token
 
-    # 3) 把「使用者這句話」記錄到 GAS / line_messages（左側＆右側都會看到）
+    # ⚠️ 避免 LINE 後台「驗證 Webhook」用的假 token 造成 400
+    invalid_tokens = {
+        "00000000000000000000000000000000",
+        "ffffffffffffffffffffffffffffffff",
+    }
+
+    # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
+    if reply_token not in invalid_tokens:
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=reply_text)
+            )
+        except Exception as e:
+            logging.error("回覆文字訊息失敗: %s", e)
+    else:
+        logging.info("跳過假 reply_token（Webhook 驗證），不回覆文字訊息。")
+
+    # 3) 把「使用者這句話」記錄到 GAS / line_messages（sender = user）
     log_from_event(
         event,
         msg_type="text",
@@ -200,6 +211,7 @@ def handle_text_message(event):
         text=reply_text,
         sender="bot",
     )
+
 
 # ================== 事件處理：貼圖訊息 ==================
 
@@ -257,3 +269,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
+
