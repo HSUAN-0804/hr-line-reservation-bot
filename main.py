@@ -168,38 +168,41 @@ def callback():
 
 # ================== 事件處理：文字訊息 ==================
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_text_message(event):
-    user_text = event.message.text
-    user_id = event.source.user_id
+# ================== 事件處理：貼圖訊息 ==================
 
-    # 1) 呼叫 OpenAI 產生小潔回覆
-    reply_text = generate_reply_from_openai(user_text, user_id=user_id)
+@handler.add(MessageEvent, message=StickerMessage)
+def handle_sticker_message(event):
+    package_id = event.message.package_id
+    sticker_id = event.message.sticker_id
 
-    # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
+    # 1) 回覆客人一段文字（不主動發貼圖，以免 400）
+    reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
     try:
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=reply_text)
         )
     except Exception as e:
-        logging.error("回覆文字訊息失敗: %s", e)
+        logging.error("回覆貼圖訊息失敗: %s", e)
 
-    # 3) 把「使用者這句話」記錄到 GAS / line_messages（左側＆右側都會看到）
+    # 2) 把「客人傳來的貼圖」記錄到 GAS / line_messages（sender = user, type = sticker）
     log_from_event(
         event,
-        msg_type="text",
-        text=user_text,
+        msg_type="sticker",
+        text="",
+        sticker_package_id=package_id,
+        sticker_id=sticker_id,
         sender="user",
     )
 
-    # 4) 再把「小潔的回覆」也記錄進去（sender = bot）
+    # 3) 再把「小潔回的那句文字」也記錄進去（sender = bot, type = text）
     log_from_event(
         event,
         msg_type="text",
         text=reply_text,
         sender="bot",
     )
+
 
 
 # ================== 事件處理：貼圖訊息 ==================
@@ -236,3 +239,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
+
