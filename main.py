@@ -1,4 +1,5 @@
-# main.py
+# main.py - 簡化乾淨版：文字 + 貼圖 + 記錄到 GAS
+
 import os
 import json
 import logging
@@ -14,7 +15,6 @@ from linebot.models import (
     TextMessage,
     StickerMessage,
     TextSendMessage,
-    StickerSendMessage,
 )
 
 # -------- OpenAI (新版 SDK) --------
@@ -40,8 +40,8 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # 統一給 GAS 用的 Web App URL（exec）
 GAS_LINE_LOG_URL = os.environ.get(
     "GAS_LINE_LOG_URL",
-    # 如果你懶得用環境變數，可以直接把 exec URL 貼在這裡：
-    # "https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec",
+    # ✅ 請把下面這行改成你的 Script exec URL（不想用環境變數就直接寫死在這行）
+    # "https://script.google.com/macros/s/XXXXXXXXXXXXXXXXXXXX/exec",
     ""
 )
 
@@ -60,10 +60,9 @@ def log_to_gas_from_event(
 ):
     """
     把 LINE 的訊息（文字 / 貼圖）丟給 GAS 的 appLineLog
-    GAS 端 doPost 會呼叫 appLineLog(body)，寫入 line_messages
+    GAS 那邊的 doPost 會呼叫 appLineLog(body)，寫入 line_messages
     """
     if not GAS_LINE_LOG_URL:
-        # 沒設定就先略過，不要中斷主流程
         logging.warning("GAS_LINE_LOG_URL 未設定，略過記錄 log")
         return
 
@@ -91,7 +90,6 @@ def log_to_gas_from_event(
     }
 
     try:
-        # 這裡直接把 body 丟給 GAS，GAS 的 doPost 會 JSON.parse 後丟給 appLineLog
         resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=2)
         logging.info("log_to_gas_from_event resp: %s", resp.text[:200])
     except Exception as e:
@@ -111,9 +109,9 @@ def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
     system_prompt = (
         "你是機車精品改裝店「H.R 燈藝」的線上客服「小潔」，"
         "使用者多半是來詢問尾燈、方向燈、排氣管、烤漆、安裝預約等問題。\n"
-        "請用「活潑親切但專業」的口吻回覆，使用繁體中文，不要用 emoji。\n"
-        "如果對方問到價格或施工時間，先用大概的區間回答，"
-        "並提醒可以提供車種與想要改裝的項目，讓你再幫忙抓比較準的估價。"
+        "請用「活潑親切但專業」的口吻回覆，使用繁體中文，不要使用 emoji。\n"
+        "如果對方問到價格或施工時間，可以先提供大概區間，"
+        "並主動詢問車種與想要改裝的項目，讓你再幫忙抓比較準的估價。"
     )
 
     try:
@@ -166,7 +164,7 @@ def handle_text_message(event):
     # 1) 呼叫 OpenAI 產生小潔回覆
     reply_text = generate_reply_from_openai(user_text, user_id=user_id)
 
-    # 2) 回覆給使用者
+    # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
     try:
         line_bot_api.reply_message(
             event.reply_token,
@@ -200,8 +198,8 @@ def handle_sticker_message(event):
     package_id = event.message.package_id
     sticker_id = event.message.sticker_id
 
-    # 1) 先回覆客人一句話（你也可以改成送貼圖）
-    reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字讓小潔更好幫你喔！"
+    # 1) 回覆客人一段文字（不主動發貼圖，以免 400）
+    reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
     try:
         line_bot_api.reply_message(
             event.reply_token,
@@ -225,5 +223,5 @@ def handle_sticker_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # Render / Railway 之類都用 0.0.0.0
+    # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
