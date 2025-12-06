@@ -1,4 +1,4 @@
-# main.py - 乾淨版：文字 + 貼圖 + 記錄到 GAS
+# main.py - 乾淨版：文字 + 貼圖 + 記錄到 GAS（含 event_id）
 
 import os
 import logging
@@ -37,10 +37,11 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # ✅ 給 GAS 用的 Web App URL（exec）
-# 建議用環境變數 GAS_LINE_LOG_URL，如果懶得設，也可以直接把 URL 寫在預設值那裡
+# 建議設在環境變數 GAS_LINE_LOG_URL
+# 如果懶得設，可以直接把 exec URL 寫在預設值：
 GAS_LINE_LOG_URL = os.environ.get(
     "GAS_LINE_LOG_URL",
-    "https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec"
+    ""  # 例如："https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec"
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -51,8 +52,9 @@ logging.basicConfig(level=logging.INFO)
 def log_to_gas(body: dict):
     """
     直接把 body 當 JSON POST 給 GAS，
-    GAS 那邊的 doPost 應該要做類似：
-    const data = JSON.parse(e.postData.contents); appLineLog(data)
+    GAS 的 doPost 應該是類似：
+      const data = JSON.parse(e.postData.contents);
+      appLineLog(data);
     """
     if not GAS_LINE_LOG_URL:
         logging.warning("GAS_LINE_LOG_URL 未設定，略過記錄 log")
@@ -74,21 +76,28 @@ def log_from_event(
     sender: str = "user",
 ):
     """
-    統一把 LINE 的事件轉成 appLineLog 需要的 JSON 格式：
+    統一把 LINE 事件轉成 appLineLog 需要的 JSON 格式：
     {
       "line_user_id": "...",
-      "type": "text" 或 "sticker",
+      "type": "text" / "sticker",
       "text": "...",
       "sticker_package_id": "...",
       "sticker_id": "...",
       "sender": "user" / "agent" / "bot",
-      "timestamp": "ISO8601"
+      "timestamp": "ISO8601",
+      "event_id": "xxxxxxxxxxxxxxxx"
     }
     """
     try:
         user_id = event.source.user_id
     except Exception:
         user_id = ""
+
+    # 事件 ID，用來在 GAS 端去重複
+    try:
+        event_id = event.id
+    except Exception:
+        event_id = None
 
     # LINE 的 timestamp 是毫秒
     try:
@@ -106,6 +115,7 @@ def log_from_event(
         "sticker_id": str(sticker_id) if sticker_id else "",
         "sender": sender,
         "timestamp": ts_iso,
+        "event_id": event_id,
     }
 
     log_to_gas(body)
@@ -185,7 +195,7 @@ def handle_text_message(event):
     except Exception as e:
         logging.error("回覆文字訊息失敗: %s", e)
 
-    # 3) 把「使用者這句話」記錄到 GAS / line_messages（左側＆右側都會看到）
+    # 3) 把「使用者這句話」記錄到 GAS / line_messages
     log_from_event(
         event,
         msg_type="text",
@@ -193,7 +203,7 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # 4) 再把「小潔的回覆」也記錄進去（sender = bot）
+    # 4) 把「小潔的回覆」也記錄到 GAS（sender = bot）
     log_from_event(
         event,
         msg_type="text",
@@ -209,7 +219,7 @@ def handle_sticker_message(event):
     package_id = event.message.package_id
     sticker_id = event.message.sticker_id
 
-    # 1) 回覆客人一段文字（不主動發貼圖，以免 400）
+    # 1) 回覆客人一段文字（不主動發貼圖，避免 400）
     reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
     try:
         line_bot_api.reply_message(
@@ -219,7 +229,7 @@ def handle_sticker_message(event):
     except Exception as e:
         logging.error("回覆貼圖訊息失敗: %s", e)
 
-    # 2) 把貼圖記錄到 GAS / line_messages
+    # 2) 把「使用者貼圖」記錄到 GAS / line_messages
     log_from_event(
         event,
         msg_type="sticker",
@@ -233,7 +243,5 @@ def handle_sticker_message(event):
 # ================== 主程式啟動 ==================
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    # Render / Railway 等都用 0.0.0.0
-    app.run(host="0.0.0.0", port=port)
-
+  port = int(os.environ.get("PORT", 5000))
+  app.run(host="0.0.0.0", port=port)
