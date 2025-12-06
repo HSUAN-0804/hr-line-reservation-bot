@@ -171,9 +171,10 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_text = event.message.text
+    user_id = event.source.user_id
 
     # 1) 呼叫 OpenAI 產生小潔回覆
-    reply_text = generate_reply_from_openai(user_text, user_id=event.source.user_id)
+    reply_text = generate_reply_from_openai(user_text, user_id=user_id)
 
     # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
     try:
@@ -184,7 +185,7 @@ def handle_text_message(event):
     except Exception as e:
         logging.error("回覆文字訊息失敗: %s", e)
 
-    # 3) 把「使用者這句話」記錄到 GAS / line_messages
+    # 3) 把「使用者這句話」記錄到 GAS / line_messages（左側＆右側都會看到）
     log_from_event(
         event,
         msg_type="text",
@@ -192,13 +193,13 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # （如果你也想記錄小潔的回覆，可以額外再 log 一次，sender="bot"）
-    # log_from_event(
-    #     event,
-    #     msg_type="text",
-    #     text=reply_text,
-    #     sender="bot",
-    # )
+    # 4) 再把「小潔的回覆」也記錄進去（sender = bot）
+    log_from_event(
+        event,
+        msg_type="text",
+        text=reply_text,
+        sender="bot",
+    )
 
 
 # ================== 事件處理：貼圖訊息 ==================
@@ -235,3 +236,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
+
