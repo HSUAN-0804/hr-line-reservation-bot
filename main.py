@@ -59,11 +59,10 @@ def log_to_gas(body: dict):
         return
 
     try:
-        # 將 timeout 稍微拉長，避免偶爾網路延遲就丟出錯誤
         resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=8)
         logging.info("log_to_gas resp: %s", resp.text[:200])
     except Exception as e:
-        logging.error("log_to_gas 錯誤: %s", e)
+        logging.error("log_to_gas error: %s", e)
 
 
 def log_from_event(
@@ -91,18 +90,17 @@ def log_from_event(
     except Exception:
         user_id = ""
 
-    # LINE 傳來的時間戳（毫秒）
+    # LINE 的 timestamp 是毫秒
     try:
-        ts_ms = event.timestamp
-        ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+        ts_iso = datetime.fromtimestamp(
+            event.timestamp / 1000, tz=timezone.utc
+        ).isoformat()
     except Exception:
-        ts = datetime.now(timezone.utc)
-
-    ts_iso = ts.isoformat()
+        ts_iso = datetime.now(timezone.utc).isoformat()
 
     body = {
         "line_user_id": user_id,
-        "type": msg_type,
+        "type": msg_type,  # 'text' or 'sticker'
         "text": text,
         "sticker_package_id": str(sticker_package_id) if sticker_package_id else "",
         "sticker_id": str(sticker_id) if sticker_id else "",
@@ -147,18 +145,18 @@ def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
         return "目前系統有點忙不過來，我可能晚一點才有辦法幫你詳細回覆 QQ"
 
 
-# ================== Flask：接收 LINE Webhook ==================
+# ================== LINE Webhook 入口 ==================
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    # 1) 取得 X-Line-Signature header 值
+    # 取得 X-Line-Signature header
     signature = request.headers.get("X-Line-Signature", "")
 
-    # 2) 取得請求 body 內容
+    # 取得請求 body
     body = request.get_data(as_text=True)
     logging.info("Request body: " + body)
 
-    # 3) 驗證與處理
+    # 驗證與處理
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -175,10 +173,10 @@ def handle_text_message(event):
     user_text = event.message.text
     user_id = event.source.user_id
 
-    # 1) 先用 OpenAI 生小潔的回覆
+    # 1) 呼叫 OpenAI 產生小潔回覆
     reply_text = generate_reply_from_openai(user_text, user_id=user_id)
 
-    # 2) 回覆給 LINE 使用者
+    # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
     try:
         line_bot_api.reply_message(
             event.reply_token,
@@ -187,7 +185,7 @@ def handle_text_message(event):
     except Exception as e:
         logging.error("回覆文字訊息失敗: %s", e)
 
-    # 3) 把「使用者這句話」記錄到 GAS / line_messages（sender = user）
+    # 3) 把「使用者這句話」記錄到 GAS / line_messages（左側＆右側都會看到）
     log_from_event(
         event,
         msg_type="text",
@@ -203,7 +201,6 @@ def handle_text_message(event):
         sender="bot",
     )
 
-
 # ================== 事件處理：貼圖訊息 ==================
 
 @handler.add(MessageEvent, message=StickerMessage)
@@ -211,15 +208,17 @@ def handle_sticker_message(event):
     package_id = event.message.package_id
     sticker_id = event.message.sticker_id
 
-    # 小潔回覆的文字內容
+    # 1) 回覆客人一段文字（不主動發貼圖，以免 400）
     reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
 
-    # 1) 儘量回覆客人（但避開 LINE 後台測試用的假 token）
     reply_token = event.reply_token
+
+    # ⚠️ 避免 LINE 後台「驗證 Webhook」用的假 token 造成 400
     invalid_tokens = {
         "00000000000000000000000000000000",
         "ffffffffffffffffffffffffffffffff",
     }
+
     if reply_token not in invalid_tokens:
         try:
             line_bot_api.reply_message(
@@ -229,7 +228,7 @@ def handle_sticker_message(event):
         except Exception as e:
             logging.error("回覆貼圖訊息失敗: %s", e)
     else:
-        logging.info("收到 Webhook 驗證事件（假 reply_token），略過回覆貼圖。")
+        logging.info("跳過假 reply_token（Webhook 驗證），不回覆貼圖訊息。")
 
     # 2) 把「使用者傳來的貼圖」記錄到 GAS / line_messages（sender = user）
     log_from_event(
@@ -241,13 +240,15 @@ def handle_sticker_message(event):
         sender="user",
     )
 
-    # 3) 再把「小潔回覆的文字」也記錄到 GAS / line_messages（sender = bot）
+    # 3) 把「小潔回的那句文字」也記錄進去（sender = bot）
     log_from_event(
         event,
         msg_type="text",
         text=reply_text,
         sender="bot",
     )
+
+
 
 
 # ================== 主程式啟動 ==================
