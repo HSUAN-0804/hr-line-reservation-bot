@@ -76,6 +76,7 @@ def log_from_event(
     """
     統一把 LINE 的事件轉成 appLineLog 需要的 JSON 格式：
     {
+      "event_id": "...",          # ✅ 用來做去重複
       "line_user_id": "...",
       "type": "text" 或 "sticker",
       "text": "...",
@@ -85,12 +86,23 @@ def log_from_event(
       "timestamp": "ISO8601"
     }
     """
+    # user id
     try:
         user_id = event.source.user_id
     except Exception:
         user_id = ""
 
-    # LINE 的 timestamp 是毫秒
+    # LINE 的 message.id：同一則訊息固定不變
+    try:
+        message_id = getattr(event.message, "id", "")
+    except Exception:
+        message_id = ""
+
+    # 🎯 同一個事件：user 跟 bot 用不同後綴
+    #   例如 "123456:user" / "123456:bot"
+    event_id = f"{message_id}:{sender}" if message_id else ""
+
+    # timestamp（LINE 給的是毫秒）
     try:
         ts_iso = datetime.fromtimestamp(
             event.timestamp / 1000, tz=timezone.utc
@@ -99,6 +111,7 @@ def log_from_event(
         ts_iso = datetime.now(timezone.utc).isoformat()
 
     body = {
+        "event_id": event_id,
         "line_user_id": user_id,
         "type": msg_type,  # 'text' or 'sticker'
         "text": text,
@@ -109,6 +122,7 @@ def log_from_event(
     }
 
     log_to_gas(body)
+
 
 
 # ================== OpenAI：產生小潔回覆 ==================
@@ -269,4 +283,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
+
 
