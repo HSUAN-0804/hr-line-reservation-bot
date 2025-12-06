@@ -1,7 +1,8 @@
+# main.py
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import requests
 from flask import Flask, request, abort
@@ -11,22 +12,45 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent,
     TextMessage,
-    StickerMessage,  # ⭐ 新增這個
+    StickerMessage,
     TextSendMessage,
-    StickerSendMessage,)
-
-from openai import OpenAI
-
-# ==== 把訊息記錄到 GAS / line_messages 用 ====
-
-GAS_LINE_LOG_URL = os.environ.get(
-    "GAS_LINE_LOG_URL",
-    # 如果你懶得用環境變數，直接把你現在這支 Script 的 exec URL 貼在這裡
-    "https://script.google.com/macros/s/你的_EXEC_網址/exec",
+    StickerSendMessage,
 )
 
+# -------- OpenAI (新版 SDK) --------
+try:
+    from openai import OpenAI
+    openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+except Exception as e:
+    openai_client = None
+    print("OpenAI 初始化失敗，請確認 openai 套件與 OPENAI_API_KEY：", e)
 
-def send_line_log_from_event(
+# -------- 基本設定 --------
+app = Flask(__name__)
+
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+
+if not CHANNEL_SECRET or not CHANNEL_ACCESS_TOKEN:
+    raise Exception("請設定 LINE_CHANNEL_SECRET 與 LINE_CHANNEL_ACCESS_TOKEN 環境變數")
+
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
+
+# 統一給 GAS 用的 Web App URL（exec）
+GAS_LINE_LOG_URL = os.environ.get(
+    "GAS_LINE_LOG_URL",
+    # 如果你懶得用環境變數，可以直接把 exec URL 貼在這裡：
+    # "https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec",
+    ""
+)
+
+logging.basicConfig(level=logging.INFO)
+
+
+# ================== 共用：把訊息記錄到 GAS（line_messages） ==================
+
+def log_to_gas_from_event(
     event,
     msg_type: str,
     text: str = "",
@@ -34,7 +58,15 @@ def send_line_log_from_event(
     sticker_id: str = "",
     sender: str = "user",
 ):
-    """把 LINE 的訊息（文字 / 貼圖）丟到 GAS 的 appLineLog"""
+    """
+    把 LINE 的訊息（文字 / 貼圖）丟給 GAS 的 appLineLog
+    GAS 端 doPost 會呼叫 appLineLog(body)，寫入 line_messages
+    """
+    if not GAS_LINE_LOG_URL:
+        # 沒設定就先略過，不要中斷主流程
+        logging.warning("GAS_LINE_LOG_URL 未設定，略過記錄 log")
+        return
+
     try:
         user_id = event.source.user_id
     except Exception:
@@ -59,101 +91,108 @@ def send_line_log_from_event(
     }
 
     try:
-        # 這裡直接丟 body，GAS 那邊 doPost 會當成 appLineLog 的 body
-        requests.post(GAS_LINE_LOG_URL, json=body, timeout=2)
+        # 這裡直接把 body 丟給 GAS，GAS 的 doPost 會 JSON.parse 後丟給 appLineLog
+        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=2)
+        logging.info("log_to_gas_from_event resp: %s", resp.text[:200])
     except Exception as e:
-        print("send_line_log_from_event error:", e)
+        logging.error("log_to_gas_from_event error: %s", e)
 
 
-# ===== 環境變數 =====
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
-LINE_CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+# ================== OpenAI：產生小潔回覆 ==================
 
-# 建議在 Render 環境變數新增 GAS_BASE_URL
-# 值 = 你的 GAS WebApp URL，例如：
-# https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec
-GAS_BASE_URL        = os.getenv("GAS_BASE_URL") or "https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec"
+def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
+    """
+    呼叫 OpenAI，產生 H.R 燈藝小潔的回覆
+    （簡化版，可之後再加店家資料 / Google Sheet 等）
+    """
+    if not openai_client:
+        return "目前暫時無法連線到 AI 伺服器，不好意思 >_<"
 
-OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
+    system_prompt = (
+        "你是機車精品改裝店「H.R 燈藝」的線上客服「小潔」，"
+        "使用者多半是來詢問尾燈、方向燈、排氣管、烤漆、安裝預約等問題。\n"
+        "請用「活潑親切但專業」的口吻回覆，使用繁體中文，不要用 emoji。\n"
+        "如果對方問到價格或施工時間，先用大概的區間回答，"
+        "並提醒可以提供車種與想要改裝的項目，讓你再幫忙抓比較準的估價。"
+    )
 
-line_bot_api = LineBotApi(LINE_CHANNEL_TOKEN)
-handler      = WebhookHandler(LINE_CHANNEL_SECRET)
-client       = OpenAI(api_key=OPENAI_API_KEY)
-
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
-
-# ===== 呼叫 GAS WebApp 共用函式 =====
-def gas_get(action, params=None):
-    if not GAS_BASE_URL:
-        raise RuntimeError("GAS_BASE_URL not set")
-    params = params or {}
-    params["action"] = action                      # 放在 query string
-    r = requests.get(GAS_BASE_URL, params=params, timeout=10)
-    app.logger.info(f"GET GAS {action}: {r.status_code} {r.text[:200]}")
-    r.raise_for_status()
-    return r.json()
-
-def gas_post(action, payload):
-    if not GAS_BASE_URL:
-        raise RuntimeError("GAS_BASE_URL not set")
-    params = {"action": action}                    # ✅ 這裡用 ?action= 傳給 GAS 的 doPost
-    r = requests.post(GAS_BASE_URL, params=params, json=payload, timeout=10)
-    app.logger.info(f"POST GAS {action}: {r.status_code} {r.text[:200]}")
-    r.raise_for_status()
     try:
-        return r.json()
-    except Exception:
-        return {"raw": r.text}
+        resp = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": user_text
+                },
+            ],
+            temperature=0.6,
+        )
+        reply = resp.choices[0].message.content.strip()
+        return reply or "這邊暫時想不到怎麼回，可以再多跟我描述一點嗎？"
+    except Exception as e:
+        logging.error("OpenAI 回覆失敗: %s", e)
+        return "目前系統有點忙不過來，我可能晚一點才有辦法幫你詳細回覆 QQ"
 
-# ===== 預約流程狀態（存在記憶體） =====
-USER_STATE = {}
-# state: idle / waiting_date / waiting_time / waiting_info / confirming
 
-# ===== Webhook 入口 =====
+# ================== LINE Webhook 入口 ==================
+
 @app.route("/callback", methods=["POST"])
 def callback():
+    # 取得 X-Line-Signature header
     signature = request.headers.get("X-Line-Signature", "")
+
+    # 取得請求 body
     body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
+    logging.info("Request body: " + body)
+
+    # 驗證與處理
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        logging.error("Invalid signature. Check channel access token/secret.")
         abort(400)
+
     return "OK"
 
-# ===== 主事件處理（唯一一個 handle_message） =====
+
+# ================== 事件處理：文字訊息 ==================
+
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event: MessageEvent):
+def handle_text_message(event):
     user_id = event.source.user_id
-    text    = event.message.text.strip()
+    user_text = event.message.text
 
-    # ① 每一則訊息先丟一筆 log 給 GAS（寫進原本 SHEET 的 line_messages）
+    # 1) 呼叫 OpenAI 產生小潔回覆
+    reply_text = generate_reply_from_openai(user_text, user_id=user_id)
+
+    # 2) 回覆給使用者
     try:
-        gas_post("lineLog", {
-            "line_user_id": user_id,
-            "text": text,
-            "timestamp": datetime.utcnow().isoformat()
-        })
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply_text)
+        )
     except Exception as e:
-        logging.warning(f"log to GAS error: {e}")
+        logging.error("回覆文字訊息失敗: %s", e)
 
-    # ② 簡單指令：預約 / 查預約
-    if text in ("預約", "我要預約"):
-        start_reservation_flow(user_id, event.reply_token)
-        return
-    if text in ("查預約", "我的預約"):
-        show_my_reservations(user_id, event.reply_token)
-        return
+    # 3) 把「使用者這句話」記錄到 GAS / line_messages
+    log_to_gas_from_event(
+        event,
+        msg_type="text",
+        text=user_text,
+        sender="user",
+    )
 
-    # ③ 若在預約流程中，優先處理預約邏輯
-    state = USER_STATE.get(user_id)
-    if state and state.get("step") != "idle":
-        handle_reservation_flow(user_id, text, event.reply_token)
-        return
+    # （如果你也想記錄小潔的回覆，可再呼叫一次 log_to_gas_from_event，sender="bot"）
+    # log_to_gas_from_event(
+    #     event,
+    #     msg_type="text",
+    #     text=reply_text,
+    #     sender="bot",
+    # )
 
-    # ④ 其他情況丟給 OpenAI 智慧客服
-    reply_ai_chat(user_id, text, event.reply_token)
+
+# ================== 事件處理：貼圖訊息 ==================
 
 @handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker_message(event):
@@ -161,197 +200,30 @@ def handle_sticker_message(event):
     package_id = event.message.package_id
     sticker_id = event.message.sticker_id
 
-    # 1) 你想怎麼回客人（可以是文字，或是回一張貼圖）：
-    # 這裡給一個簡單範例，你可以換成自己的邏輯
+    # 1) 先回覆客人一句話（你也可以改成送貼圖）
+    reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字讓小潔更好幫你喔！"
     try:
-        reply_text = "收到你的貼圖～"
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=reply_text)
         )
     except Exception as e:
-        print("reply sticker message error:", e)
+        logging.error("回覆貼圖訊息失敗: %s", e)
 
-    # 2) 記錄這張貼圖到 GAS / line_messages
-    send_line_log_from_event(
+    # 2) 把貼圖記錄到 GAS / line_messages
+    log_to_gas_from_event(
         event,
         msg_type="sticker",
-        text="",  # 貼圖沒有文字內容就留空
+        text="",
         sticker_package_id=package_id,
         sticker_id=sticker_id,
         sender="user",
     )
 
 
-# ===== 智慧客服：OpenAI 小潔 =====
-def reply_ai_chat(user_id, user_text, reply_token):
-    system_prompt = """你是 H.R 燈藝機車精品改裝店的 LINE 智慧客服「小潔」。
-說話口吻：活潑、有溫度、專業，全部使用繁體中文，不要使用表情符號。
-你可以回答關於 H.R 燈藝的營業時間、預約注意事項、改裝相關的常見問題。
-如果使用者想預約，請引導他輸入「預約」，啟動預約流程。
-"""
+# ================== 主程式啟動 ==================
 
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_text},
-        ],
-    )
-    reply_text = completion.choices[0].message.content.strip()
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
-
-# ===== 預約流程：啟動 =====
-def start_reservation_flow(user_id, reply_token):
-    USER_STATE[user_id] = {
-        "step": "waiting_date",
-        "reservation": {}
-    }
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="好的～來幫你安排預約時間。\n請先輸入日期，例如：2025-12-03")
-    )
-
-# ===== 預約流程：各步驟處理 =====
-def handle_reservation_flow(user_id, text, reply_token):
-    state = USER_STATE.get(user_id) or {"step": "idle", "reservation": {}}
-    step  = state.get("step")
-    data  = state.get("reservation", {})
-
-    # Step 1: 日期
-    if step == "waiting_date":
-        date_str = text.strip()
-        data["date"] = date_str
-
-        USER_STATE[user_id] = {"step": "waiting_time", "reservation": data}
-        line_bot_api.reply_message(
-            reply_token,
-            TextSendMessage(text=f"預計日期：{date_str}\n請輸入預計時間，例如：14:00")
-        )
-        return
-
-    # Step 2: 時間
-    if step == "waiting_time":
-        time_str = text.strip()
-        data["time"] = time_str
-
-        USER_STATE[user_id] = {"step": "waiting_info", "reservation": data}
-        line_bot_api.reply_message(
-            reply_token,
-            TextSendMessage(text="好的～再請你輸入：\n1. 姓名\n2. 連絡電話\n3. 車種（例如：JETSL）\n可以「姓名/電話/車種」這樣輸入。")
-        )
-        return
-
-    # Step 3: 基本資料：姓名/電話/車種
-    if step == "waiting_info":
-        parts = text.replace("／", "/").split("/")
-        if len(parts) < 3:
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text="格式不太對～請用「姓名/電話/車種」這樣輸入喔！")
-            )
-            return
-        name  = parts[0].strip()
-        phone = parts[1].strip()
-        model = parts[2].strip()
-
-        data["name"]  = name
-        data["phone"] = phone
-        data["model"] = model
-
-        USER_STATE[user_id] = {"step": "confirming", "reservation": data}
-        msg = (
-          "請幫我確認一下預約資料：\n"
-          f"日期：{data['date']}\n"
-          f"時間：{data['time']}\n"
-          f"姓名：{name}\n"
-          f"電話：{phone}\n"
-          f"車種：{model}\n\n"
-          "如果都沒問題，請回覆「確認預約」。"
-        )
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=msg))
-        return
-
-    # Step 4: 確認送出
-    if step == "confirming":
-        if text.strip() not in ("確認", "確認預約", "ok", "OK"):
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text="如果要送出預約，請回覆「確認預約」。\n若要修改日期或時間，直接輸入新的日期或時間即可。")
-            )
-            return
-
-        data = state["reservation"]
-        try:
-            # 先綁定 LINE userId 到顧客（用電話當 key）
-            try:
-                gas_post("bindLineCustomer", {
-                    "line_user_id": user_id,
-                    "display_name": data["name"],
-                    "key": data["phone"]
-                })
-            except Exception as bind_err:
-                logging.warning(f"bindLineCustomer error: {bind_err}")
-
-            # 真正建立預約
-            payload = {
-                "line_user_id": user_id,
-                "name":   data["name"],
-                "phone":  data["phone"],
-                "plate":  "",
-                "model":  data["model"],
-                "date":   data["date"],
-                "start_time": data["time"],
-                "end_time":   "",
-                "service_type": "LINE 預約",
-                "technician":   "",
-                "remark":       "LINEBOT 自動預約",
-                "source":       "LINE"
-            }
-            res = gas_post("reservationsCreate", payload)
-            if res.get("ok"):
-                msg = "預約已送出，感謝你～\n如果之後需要調整時間，也可以再傳訊息給我。"
-            else:
-                msg = "預約送出時遇到問題 QQ\n可以稍後再試一次，或直接留言給我們人工處理。"
-        except Exception as e:
-            logging.exception("create reservation error")
-            msg = "預約送出時遇到問題 QQ\n可以先把資料截圖給我們，或稍後再試一次。"
-
-        USER_STATE[user_id] = {"step": "idle", "reservation": {}}
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=msg))
-        return
-
-    # 其他狀況：重置流程
-    USER_STATE[user_id] = {"step": "idle", "reservation": {}}
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="我們重新來一次：如果要預約，請輸入「預約」。")
-    )
-
-# ===== 查詢我的預約（目前先簡單確認有綁定） =====
-def show_my_reservations(user_id, reply_token):
-    try:
-        res = gas_get("resolveLineCustomer", {"line_user_id": user_id})
-        if not res.get("ok"):
-            line_bot_api.reply_message(
-              reply_token,
-              TextSendMessage(text="目前還沒有綁定你的資料喔！\n第一次預約時會幫你自動建立。")
-            )
-            return
-
-        line_bot_api.reply_message(
-          reply_token,
-          TextSendMessage(text="已經幫你綁定顧客資料，之後我可以幫你查詢預約與消費紀錄～\n（詳細查詢功能我們下一步再加）")
-        )
-    except Exception as e:
-        logging.exception("show reservations error")
-        line_bot_api.reply_message(
-          reply_token,
-          TextSendMessage(text="查詢時遇到一點問題，等一下再試試看～")
-        )
-
-# ===== 啟動 Flask =====
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000)) or 5000
+    port = int(os.environ.get("PORT", 5000))
+    # Render / Railway 之類都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
-
