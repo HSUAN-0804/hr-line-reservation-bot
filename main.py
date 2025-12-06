@@ -59,7 +59,7 @@ def log_to_gas(body: dict):
         return
 
     try:
-        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=2)
+        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=8)
         logging.info("log_to_gas resp: %s", resp.text[:200])
     except Exception as e:
         logging.error("log_to_gas error: %s", e)
@@ -170,6 +170,8 @@ def callback():
 
 # ================== 事件處理：貼圖訊息 ==================
 
+# ================== 事件處理：貼圖訊息 ==================
+
 @handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker_message(event):
     package_id = event.message.package_id
@@ -177,15 +179,27 @@ def handle_sticker_message(event):
 
     # 1) 回覆客人一段文字（不主動發貼圖，以免 400）
     reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
-    try:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_text)
-        )
-    except Exception as e:
-        logging.error("回覆貼圖訊息失敗: %s", e)
 
-    # 2) 把「客人傳來的貼圖」記錄到 GAS / line_messages（sender = user, type = sticker）
+    reply_token = event.reply_token
+
+    # ⚠️ 避免 LINE 後台「驗證 Webhook」用的假 token 造成 400
+    invalid_tokens = {
+        "00000000000000000000000000000000",
+        "ffffffffffffffffffffffffffffffff",
+    }
+
+    if reply_token not in invalid_tokens:
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=reply_text)
+            )
+        except Exception as e:
+            logging.error("回覆貼圖訊息失敗: %s", e)
+    else:
+        logging.info("跳過假 reply_token（Webhook 驗證），不回覆貼圖訊息。")
+
+    # 2) 把「使用者傳來的貼圖」記錄到 GAS / line_messages（sender = user）
     log_from_event(
         event,
         msg_type="sticker",
@@ -195,13 +209,14 @@ def handle_sticker_message(event):
         sender="user",
     )
 
-    # 3) 再把「小潔回的那句文字」也記錄進去（sender = bot, type = text）
+    # 3) 把「小潔回的那句文字」也記錄進去（sender = bot）
     log_from_event(
         event,
         msg_type="text",
         text=reply_text,
         sender="bot",
     )
+
 
 
 
@@ -239,4 +254,5 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
+
 
