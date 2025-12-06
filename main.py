@@ -166,10 +166,8 @@ def callback():
     return "OK"
 
 
-# ================== 事件處理：文字訊息 ==================
 
 # ================== 事件處理：貼圖訊息 ==================
-
 # ================== 事件處理：貼圖訊息 ==================
 
 @handler.add(MessageEvent, message=StickerMessage)
@@ -177,12 +175,12 @@ def handle_sticker_message(event):
     package_id = event.message.package_id
     sticker_id = event.message.sticker_id
 
-    # 1) 回覆客人一段文字（不主動發貼圖，以免 400）
+    # 小潔回覆的文字
     reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
 
     reply_token = event.reply_token
 
-    # ⚠️ 避免 LINE 後台「驗證 Webhook」用的假 token 造成 400
+    # 避免 LINE 後台「驗證 Webhook」的假 token 造成 400
     invalid_tokens = {
         "00000000000000000000000000000000",
         "ffffffffffffffffffffffffffffffff",
@@ -197,9 +195,9 @@ def handle_sticker_message(event):
         except Exception as e:
             logging.error("回覆貼圖訊息失敗: %s", e)
     else:
-        logging.info("跳過假 reply_token（Webhook 驗證），不回覆貼圖訊息。")
+        logging.info("Webhook 驗證事件，略過回覆貼圖。")
 
-    # 2) 把「使用者傳來的貼圖」記錄到 GAS / line_messages（sender = user）
+    # 1) 把「使用者傳來的貼圖」記錄到 GAS / line_messages（sender = user, type = sticker）
     log_from_event(
         event,
         msg_type="sticker",
@@ -209,13 +207,14 @@ def handle_sticker_message(event):
         sender="user",
     )
 
-    # 3) 把「小潔回的那句文字」也記錄進去（sender = bot）
+    # 2) 把「小潔回的那句文字」也記錄進 SHEETS（sender = bot, type = text）
     log_from_event(
         event,
         msg_type="text",
         text=reply_text,
         sender="bot",
     )
+
 
 
 
@@ -254,5 +253,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
+
 
 
