@@ -8,9 +8,62 @@ from flask import Flask, request, abort
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import (
+    MessageEvent,
+    TextMessage,
+    StickerMessage,  # ⭐ 新增這個
+    TextSendMessage,
+    StickerSendMessage,)
 
 from openai import OpenAI
+
+# ==== 把訊息記錄到 GAS / line_messages 用 ====
+
+GAS_LINE_LOG_URL = os.environ.get(
+    "GAS_LINE_LOG_URL",
+    # 如果你懶得用環境變數，直接把你現在這支 Script 的 exec URL 貼在這裡
+    "https://script.google.com/macros/s/你的_EXEC_網址/exec",
+)
+
+
+def send_line_log_from_event(
+    event,
+    msg_type: str,
+    text: str = "",
+    sticker_package_id: str = "",
+    sticker_id: str = "",
+    sender: str = "user",
+):
+    """把 LINE 的訊息（文字 / 貼圖）丟到 GAS 的 appLineLog"""
+    try:
+        user_id = event.source.user_id
+    except Exception:
+        user_id = ""
+
+    # LINE 的 timestamp 是毫秒
+    try:
+        ts_iso = datetime.fromtimestamp(
+            event.timestamp / 1000, tz=timezone.utc
+        ).isoformat()
+    except Exception:
+        ts_iso = datetime.now(timezone.utc).isoformat()
+
+    body = {
+        "line_user_id": user_id,
+        "type": msg_type,  # 'text' or 'sticker'
+        "text": text,
+        "sticker_package_id": str(sticker_package_id) if sticker_package_id else "",
+        "sticker_id": str(sticker_id) if sticker_id else "",
+        "sender": sender,  # user / agent / bot
+        "timestamp": ts_iso,
+    }
+
+    try:
+        # 這裡直接丟 body，GAS 那邊 doPost 會當成 appLineLog 的 body
+        requests.post(GAS_LINE_LOG_URL, json=body, timeout=2)
+    except Exception as e:
+        print("send_line_log_from_event error:", e)
+
 
 # ===== 環境變數 =====
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
@@ -101,6 +154,34 @@ def handle_message(event: MessageEvent):
 
     # ④ 其他情況丟給 OpenAI 智慧客服
     reply_ai_chat(user_id, text, event.reply_token)
+
+@handler.add(MessageEvent, message=StickerMessage)
+def handle_sticker_message(event):
+    user_id = event.source.user_id
+    package_id = event.message.package_id
+    sticker_id = event.message.sticker_id
+
+    # 1) 你想怎麼回客人（可以是文字，或是回一張貼圖）：
+    # 這裡給一個簡單範例，你可以換成自己的邏輯
+    try:
+        reply_text = "收到你的貼圖～"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply_text)
+        )
+    except Exception as e:
+        print("reply sticker message error:", e)
+
+    # 2) 記錄這張貼圖到 GAS / line_messages
+    send_line_log_from_event(
+        event,
+        msg_type="sticker",
+        text="",  # 貼圖沒有文字內容就留空
+        sticker_package_id=package_id,
+        sticker_id=sticker_id,
+        sender="user",
+    )
+
 
 # ===== 智慧客服：OpenAI 小潔 =====
 def reply_ai_chat(user_id, user_text, reply_token):
@@ -273,3 +354,4 @@ def show_my_reservations(user_id, reply_token):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000)) or 5000
     app.run(host="0.0.0.0", port=port)
+
