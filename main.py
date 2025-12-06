@@ -40,7 +40,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # 建議用環境變數 GAS_LINE_LOG_URL，如果懶得設，也可以直接把 URL 寫在預設值那裡
 GAS_LINE_LOG_URL = os.environ.get(
     "GAS_LINE_LOG_URL",
-    ""  # 例如："https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec"
+    "https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec"
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -171,9 +171,10 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_text = event.message.text
+    user_id = event.source.user_id
 
     # 1) 呼叫 OpenAI 產生小潔回覆
-    reply_text = generate_reply_from_openai(user_text, user_id=event.source.user_id)
+    reply_text = generate_reply_from_openai(user_text, user_id=user_id)
 
     # 2) 回覆給使用者（只有文字，不發圖片 / 貼圖）
     try:
@@ -184,7 +185,7 @@ def handle_text_message(event):
     except Exception as e:
         logging.error("回覆文字訊息失敗: %s", e)
 
-    # 3) 把「使用者這句話」記錄到 GAS / line_messages
+    # 3) 把「使用者這句話」記錄到 GAS / line_messages（左側＆右側都會看到）
     log_from_event(
         event,
         msg_type="text",
@@ -192,13 +193,13 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # （如果你也想記錄小潔的回覆，可以額外再 log 一次，sender="bot"）
-    # log_from_event(
-    #     event,
-    #     msg_type="text",
-    #     text=reply_text,
-    #     sender="bot",
-    # )
+    # 4) 再把「小潔的回覆」也記錄進去（sender = bot）
+    log_from_event(
+        event,
+        msg_type="text",
+        text=reply_text,
+        sender="bot",
+    )
 
 
 # ================== 事件處理：貼圖訊息 ==================
