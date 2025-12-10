@@ -1,6 +1,6 @@
-# main.py - 支援 bot_mode + last_mode_at 判斷
+# main.py - 支援 bot_mode + last_mode_at_ms 判斷
 # auto_ai / owner_manual / staff_manual
-# 並避免小潔在切回 auto_ai 時補回「過去瑄模式收到的舊訊息」
+# 避免小潔在切回 auto_ai 時補回「過去瑄模式收到的舊訊息」
 
 import os
 import logging
@@ -47,16 +47,16 @@ GAS_LINE_LOG_URL = os.environ.get(
 logging.basicConfig(level=logging.INFO)
 
 
-# ================== 共用：查詢 LineUsers 的 bot_mode / last_mode_at ==================
+# ================== 共用：查詢 LineUsers 的 bot_mode / last_mode_at_ms ==================
 
 def get_line_user_routing(line_user_id: str):
     """
     從 GAS 取得這個 line_user_id 的 routing 設定：
       bot_mode: auto_ai / owner_manual / staff_manual
       owner_agent_id: OWNER / XMING / ''
-      last_mode_at: ISO8601 字串或 None
+      last_mode_at_ms: 毫秒數或 None
 
-    回傳：(bot_mode, owner_agent_id, last_mode_at_iso)
+    回傳：(bot_mode, owner_agent_id, last_mode_at_ms)
     """
     default = ("auto_ai", "", None)
 
@@ -81,51 +81,44 @@ def get_line_user_routing(line_user_id: str):
 
         mode = data.get("bot_mode") or "auto_ai"
         owner = data.get("owner_agent_id") or ""
+        last_ms = data.get("last_mode_at_ms", None)
 
-        # Apps Script 會把 Date 序列化成 ISO 字串
-        last_at = data.get("last_mode_at")
-        if isinstance(last_at, dict) and "date" in last_at:
-            # 萬一 Apps Script 用其他格式（安全防呆）
-            last_at_iso = last_at["date"]
+        if isinstance(last_ms, (int, float)):
+            last_ms = int(last_ms)
         else:
-            last_at_iso = last_at  # 直接當作 ISO 字串
+            last_ms = None
 
         if mode not in ("auto_ai", "owner_manual", "staff_manual"):
             mode = "auto_ai"
 
-        logging.info("routing for %s: mode=%s owner=%s last_mode_at=%s",
-                     line_user_id, mode, owner, last_at_iso)
-        return mode, owner, last_at_iso
+        logging.info(
+            "routing for %s: mode=%s owner=%s last_mode_at_ms=%s",
+            line_user_id, mode, owner, last_ms
+        )
+        return mode, owner, last_ms
 
     except Exception as e:
         logging.error("get_line_user_routing error: %s", e)
         return default
 
 
-def is_event_after_last_mode(event_timestamp_ms: int, last_mode_at_iso: str | None) -> bool:
+def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -> bool:
     """
-    回傳這個事件時間是否「晚於最後一次切換模式時間」。
-    只用在 auto_ai 模式：避免小潔在切回 auto_ai 後，補回過去 manual 期間的舊訊息。
+    決定這一則文字事件，是否要由小潔自動回覆。
+    條件：bot_mode == auto_ai 且
+      (沒有 last_mode_at_ms 或 event_timestamp_ms >= last_mode_at_ms)
     """
-    if not event_timestamp_ms:
-        return True  # 沒資料就當作可回覆
+    if bot_mode != "auto_ai":
+        return False
 
-    if not last_mode_at_iso:
-        return True  # 沒有 last_mode_at 記錄 → 預設可回覆
-
-    try:
-        # Apps Script 傳來通常是 "2025-12-10T05:12:34.000Z" 之類
-        iso_str = str(last_mode_at_iso)
-        # 確保有時區
-        if iso_str.endswith("Z"):
-            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        else:
-            dt = datetime.fromisoformat(iso_str)
-        last_ms = int(dt.timestamp() * 1000)
-        return event_timestamp_ms >= last_ms
-    except Exception as e:
-        logging.warning("parse last_mode_at error: %s (value=%s)", e, last_mode_at_iso)
+    # event_timestamp_ms 可能是 None（理論上 LINE 都會給）
+    if not isinstance(event_timestamp_ms, (int, float)):
         return True
+
+    if last_mode_at_ms is None:
+        return True
+
+    return event_timestamp_ms >= last_mode_at_ms
 
 
 # ================== 共用：把訊息記錄到 GAS（line_messages） ==================
@@ -244,7 +237,7 @@ def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
 
 @app.route("/callback", methods=["POST"])
 def callback():
-  # 取得 X-Line-Signature header
+    # 取得 X-Line-Signature header
     signature = request.headers.get("X-Line-Signature", "")
 
     # 取得請求 body
@@ -276,16 +269,12 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # 1) 查詢這個使用者目前的 bot_mode（auto_ai / owner_manual / staff_manual）
-    bot_mode, owner_agent_id, last_mode_at_iso = get_line_user_routing(user_id)
+    # 1) 查詢這個使用者目前的 routing 設定
+    bot_mode, owner_agent_id, last_mode_at_ms = get_line_user_routing(user_id)
     event_ms = getattr(event, "timestamp", None)  # LINE 提供的毫秒
 
-    # 2) 判斷這一則事件是否「應該由小潔自動回覆」
-    #    條件：bot_mode == auto_ai 且 事件時間 >= last_mode_at
-    should_auto_reply = False
-    if bot_mode == "auto_ai":
-        if is_event_after_last_mode(event_ms, last_mode_at_iso):
-            should_auto_reply = True
+    # 2) 判斷這一則是否應由小潔自動回覆
+    should_auto_reply = should_auto_reply_text(bot_mode, event_ms, last_mode_at_ms)
 
     reply_text = None
     if should_auto_reply:
@@ -312,7 +301,10 @@ def handle_text_message(event):
         if reply_token in invalid_tokens:
             logging.info("跳過假 reply_token（Webhook 驗證），不回覆文字訊息。")
         else:
-            logging.info("bot_mode=%s, should_auto_reply=%s，不自動回覆文字。", bot_mode, should_auto_reply)
+            logging.info(
+                "bot_mode=%s, last_mode_at_ms=%s, event_ms=%s, should_auto_reply=%s",
+                bot_mode, last_mode_at_ms, event_ms, should_auto_reply
+            )
 
     # 4) 如果有小潔回覆，再把「小潔的回覆」也記錄進去（sender = bot）
     if reply_text:
@@ -332,14 +324,10 @@ def handle_sticker_message(event):
     sticker_id = event.message.sticker_id
     user_id = event.source.user_id
 
-    bot_mode, owner_agent_id, last_mode_at_iso = get_line_user_routing(user_id)
+    bot_mode, owner_agent_id, last_mode_at_ms = get_line_user_routing(user_id)
     event_ms = getattr(event, "timestamp", None)
 
-    # 是否要自動回覆貼圖（邏輯跟文字一樣）
-    should_auto_reply = False
-    if bot_mode == "auto_ai":
-        if is_event_after_last_mode(event_ms, last_mode_at_iso):
-            should_auto_reply = True
+    should_auto_reply = should_auto_reply_text(bot_mode, event_ms, last_mode_at_ms)
 
     reply_text = None
     if should_auto_reply:
@@ -363,7 +351,10 @@ def handle_sticker_message(event):
         if reply_token in invalid_tokens:
             logging.info("跳過假 reply_token（Webhook 驗證），不回覆貼圖訊息。")
         else:
-            logging.info("bot_mode=%s, should_auto_reply=%s，不自動回覆貼圖。", bot_mode, should_auto_reply)
+            logging.info(
+                "bot_mode=%s, last_mode_at_ms=%s, event_ms=%s, should_auto_reply=%s",
+                bot_mode, last_mode_at_ms, event_ms, should_auto_reply
+            )
 
     # 1) 記錄「使用者傳來的貼圖」（sender = user）
     log_from_event(
