@@ -12,6 +12,7 @@ from linebot.models import (
     TextMessage,
     StickerMessage,
     TextSendMessage,
+    Sender,            # 👈 新增：使用 Sender 來指定顯示名稱
 )
 
 # -------- OpenAI (新版 SDK) --------
@@ -105,7 +106,7 @@ def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -
     條件：
       1) bot_mode == auto_ai
       2) 事件時間 >= last_mode_at_ms（如果有）
-      3) 事件與現在時間差 <= 120 秒（避免處理太舊的重送事件）
+      3) 事件與現在時間差 <= 10 秒（避免處理太舊的重送事件）
     """
     if bot_mode != "auto_ai":
         return False
@@ -117,7 +118,7 @@ def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     delta_ms = now_ms - int(event_timestamp_ms)
 
-    # 📌 如果事件發生時間距今超過 120 秒，就當成舊事件，不自動回覆
+    # 📌 如果事件發生時間距今超過 10 秒，就當成舊事件，不自動回覆
     if delta_ms > 10 * 1000:
         logging.info(
             "event too old to auto-reply: delta_ms=%s (mode=%s)", delta_ms, bot_mode
@@ -300,7 +301,17 @@ def handle_text_message(event):
 
     if reply_text and reply_token not in invalid_tokens:
         try:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+            # 使用 Sender 讓客人端顯示「小潔 H.R 燈藝客服」
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(
+                    text=reply_text,
+                    sender=Sender(
+                        name="小潔 H.R 燈藝客服",
+                        # icon_url="https://你的小潔頭像網址"  # 如果有獨立小潔頭像可以在這裡補
+                    )
+                )
+            )
         except Exception as e:
             logging.error("回覆文字訊息失敗: %s", e)
     else:
@@ -346,7 +357,16 @@ def handle_sticker_message(event):
 
     if reply_text and reply_token not in invalid_tokens:
         try:
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(
+                    text=reply_text,
+                    sender=Sender(
+                        name="小潔 H.R 燈藝客服",
+                        # icon_url="https://你的小潔頭像網址"
+                    )
+                )
+            )
         except Exception as e:
             logging.error("回覆貼圖訊息失敗: %s", e)
     else:
@@ -381,4 +401,3 @@ def handle_sticker_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
