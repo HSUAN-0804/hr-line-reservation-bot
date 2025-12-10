@@ -136,8 +136,8 @@ def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -
 def log_to_gas(body: dict):
     """
     把 body 打給 GAS 的 doPost。
-    這裡要用 { action: 'lineLog', body: {...} } 格式，
-    才會進到 Code.gs 的 appLineLog。
+    使用 { action: 'lineLog', body: {...} } 格式，
+    對應 Code.gs 裡的 appLineLog。
     """
     if not GAS_LINE_LOG_URL:
         logging.warning("GAS_LINE_LOG_URL 未設定，略過記錄 log")
@@ -161,6 +161,8 @@ def log_from_event(
     sticker_package_id: str = "",
     sticker_id: str = "",
     sender: str = "user",
+    display_persona=None,
+    sent_by_agent_id=None,
 ):
     """
     統一把 LINE 的事件轉成 appLineLog 需要的 JSON 格式。
@@ -177,7 +179,7 @@ def log_from_event(
     except Exception:
         message_id = ""
 
-    # 同一個事件：user 跟 bot 用不同後綴
+    # 同一個事件：user / bot / agent 用不同後綴，避免重複
     event_id = f"{message_id}:{sender}" if message_id else ""
 
     # timestamp（LINE 給的是毫秒）
@@ -195,9 +197,15 @@ def log_from_event(
         "text": text,
         "sticker_package_id": str(sticker_package_id) if sticker_package_id else "",
         "sticker_id": str(sticker_id) if sticker_id else "",
-        "sender": sender,  # 'user' / 'bot' / 'agent' 等
+        "sender": sender,   # 'user' / 'bot' / 'agent'
         "timestamp": ts_iso,
     }
+
+    # 只有需要時才加這兩欄
+    if display_persona:
+        body["display_persona"] = display_persona
+    if sent_by_agent_id:
+        body["sent_by_agent_id"] = sent_by_agent_id
 
     log_to_gas(body)
 
@@ -256,7 +264,7 @@ def handle_text_message(event):
     user_text = event.message.text
     user_id = event.source.user_id
 
-    # 0) 先記錄「使用者這句話」（不管現在是不是自動小潔）
+    # 0) 先記錄「使用者這句話」（不管是不是自動小潔）
     log_from_event(
         event,
         msg_type="text",
@@ -303,13 +311,14 @@ def handle_text_message(event):
                 bot_mode, last_mode_at_ms, event_ms, should_reply
             )
 
-    # 3) 如果真的有產生小潔回覆，再額外記錄一筆 bot 訊息
+    # 3) 如果真的有產生小潔回覆，再額外記錄一筆 bot 訊息（帶 persona）
     if reply_text:
         log_from_event(
             event,
             msg_type="text",
             text=reply_text,
             sender="bot",
+            display_persona="xiaojie",
         )
 
 
@@ -369,13 +378,14 @@ def handle_sticker_message(event):
         sender="user",
     )
 
-    # 如果有回覆文字，再記錄一筆 bot 訊息
+    # 如果有回覆文字，再記錄一筆 bot 訊息（帶 persona）
     if reply_text:
         log_from_event(
             event,
             msg_type="text",
             text=reply_text,
             sender="bot",
+            display_persona="xiaojie",
         )
 
 
