@@ -118,7 +118,7 @@ def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -
     delta_ms = now_ms - int(event_timestamp_ms)
 
     # 📌 如果事件發生時間距今超過 120 秒，就當成舊事件，不自動回覆
-    if delta_ms > 120 * 1000:
+    if delta_ms > 10 * 1000:
         logging.info(
             "event too old to auto-reply: delta_ms=%s (mode=%s)", delta_ms, bot_mode
         )
@@ -381,3 +381,4 @@ def handle_sticker_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
