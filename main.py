@@ -1,7 +1,3 @@
-# main.py - 支援 bot_mode + last_mode_at_ms 判斷
-# auto_ai / owner_manual / staff_manual
-# 避免小潔在切回 auto_ai 時補回「過去瑄模式收到的舊訊息」
-
 import os
 import logging
 from datetime import datetime, timezone
@@ -105,20 +101,39 @@ def get_line_user_routing(line_user_id: str):
 def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -> bool:
     """
     決定這一則文字事件，是否要由小潔自動回覆。
-    條件：bot_mode == auto_ai 且
-      (沒有 last_mode_at_ms 或 event_timestamp_ms >= last_mode_at_ms)
+
+    條件：
+      1) bot_mode == auto_ai
+      2) 事件時間 >= last_mode_at_ms（如果有）
+      3) 事件與現在時間差 <= 120 秒（避免處理太舊的重送事件）
     """
     if bot_mode != "auto_ai":
         return False
 
-    # event_timestamp_ms 可能是 None（理論上 LINE 都會給）
     if not isinstance(event_timestamp_ms, (int, float)):
-        return True
+        # 理論上 LINE 都會給 timestamp，如果沒有，就保守一點：不自動回覆
+        return False
 
-    if last_mode_at_ms is None:
-        return True
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    delta_ms = now_ms - int(event_timestamp_ms)
 
-    return event_timestamp_ms >= last_mode_at_ms
+    # 📌 如果事件發生時間距今超過 120 秒，就當成舊事件，不自動回覆
+    if delta_ms > 120 * 1000:
+        logging.info(
+            "event too old to auto-reply: delta_ms=%s (mode=%s)", delta_ms, bot_mode
+        )
+        return False
+
+    # 如果有 last_mode_at_ms，要求事件時間要晚於最後一次模式切換時間
+    if isinstance(last_mode_at_ms, (int, float)):
+        if int(event_timestamp_ms) < int(last_mode_at_ms):
+            logging.info(
+                "event earlier than last_mode_at_ms, skip auto reply: event_ms=%s last_ms=%s",
+                event_timestamp_ms, last_mode_at_ms
+            )
+            return False
+
+    return True
 
 
 # ================== 共用：把訊息記錄到 GAS（line_messages） ==================
@@ -134,9 +149,10 @@ def log_to_gas(body: dict):
         return
 
     try:
-        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=8)
+        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=5)
         logging.info("log_to_gas resp: %s", resp.text[:200])
     except Exception as e:
+        # 只記 log，不影響主流程
         logging.error("log_to_gas error: %s", e)
 
 
@@ -237,14 +253,10 @@ def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    # 取得 X-Line-Signature header
     signature = request.headers.get("X-Line-Signature", "")
-
-    # 取得請求 body
     body = request.get_data(as_text=True)
     logging.info("Request body: " + body)
 
-    # 驗證與處理
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -269,44 +281,37 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # 1) 查詢這個使用者目前的 routing 設定
+    # 1) 查 routing
     bot_mode, owner_agent_id, last_mode_at_ms = get_line_user_routing(user_id)
-    event_ms = getattr(event, "timestamp", None)  # LINE 提供的毫秒
+    event_ms = getattr(event, "timestamp", None)
 
-    # 2) 判斷這一則是否應由小潔自動回覆
-    should_auto_reply = should_auto_reply_text(bot_mode, event_ms, last_mode_at_ms)
+    # 2) 決定是否自動回覆
+    should_reply = should_auto_reply_text(bot_mode, event_ms, last_mode_at_ms)
 
     reply_text = None
-    if should_auto_reply:
+    if should_reply:
         reply_text = generate_reply_from_openai(user_text, user_id=user_id)
 
     reply_token = event.reply_token
-
-    # ⚠️ 避免 LINE 後台「驗證 Webhook」用的假 token 造成 400
     invalid_tokens = {
         "00000000000000000000000000000000",
         "ffffffffffffffffffffffffffffffff",
     }
 
-    # 3) 回覆給使用者（只有在 should_auto_reply 且有 reply_text 才回）
     if reply_text and reply_token not in invalid_tokens:
         try:
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text=reply_text)
-            )
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
         except Exception as e:
             logging.error("回覆文字訊息失敗: %s", e)
     else:
         if reply_token in invalid_tokens:
-            logging.info("跳過假 reply_token（Webhook 驗證），不回覆文字訊息。")
+            logging.info("跳過假 reply_token，不回覆文字訊息。")
         else:
             logging.info(
-                "bot_mode=%s, last_mode_at_ms=%s, event_ms=%s, should_auto_reply=%s",
-                bot_mode, last_mode_at_ms, event_ms, should_auto_reply
+                "text: bot_mode=%s last_mode_at_ms=%s event_ms=%s should_reply=%s",
+                bot_mode, last_mode_at_ms, event_ms, should_reply
             )
 
-    # 4) 如果有小潔回覆，再把「小潔的回覆」也記錄進去（sender = bot）
     if reply_text:
         log_from_event(
             event,
@@ -327,10 +332,10 @@ def handle_sticker_message(event):
     bot_mode, owner_agent_id, last_mode_at_ms = get_line_user_routing(user_id)
     event_ms = getattr(event, "timestamp", None)
 
-    should_auto_reply = should_auto_reply_text(bot_mode, event_ms, last_mode_at_ms)
+    should_reply = should_auto_reply_text(bot_mode, event_ms, last_mode_at_ms)
 
     reply_text = None
-    if should_auto_reply:
+    if should_reply:
         reply_text = "收到你的貼圖～如果方便的話，也可以再打一點文字，讓小潔更好幫你喔！"
 
     reply_token = event.reply_token
@@ -341,22 +346,18 @@ def handle_sticker_message(event):
 
     if reply_text and reply_token not in invalid_tokens:
         try:
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text=reply_text)
-            )
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
         except Exception as e:
             logging.error("回覆貼圖訊息失敗: %s", e)
     else:
         if reply_token in invalid_tokens:
-            logging.info("跳過假 reply_token（Webhook 驗證），不回覆貼圖訊息。")
+            logging.info("跳過假 reply_token，不回覆貼圖訊息。")
         else:
             logging.info(
-                "bot_mode=%s, last_mode_at_ms=%s, event_ms=%s, should_auto_reply=%s",
-                bot_mode, last_mode_at_ms, event_ms, should_auto_reply
+                "sticker: bot_mode=%s last_mode_at_ms=%s event_ms=%s should_reply=%s",
+                bot_mode, last_mode_at_ms, event_ms, should_reply
             )
 
-    # 1) 記錄「使用者傳來的貼圖」（sender = user）
     log_from_event(
         event,
         msg_type="sticker",
@@ -366,7 +367,6 @@ def handle_sticker_message(event):
         sender="user",
     )
 
-    # 2) 如果有自動回覆文字，也記錄進去（sender = bot）
     if reply_text:
         log_from_event(
             event,
@@ -380,5 +380,4 @@ def handle_sticker_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # Render / Railway 等都用 0.0.0.0
     app.run(host="0.0.0.0", port=port)
