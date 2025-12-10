@@ -12,7 +12,7 @@ from linebot.models import (
     TextMessage,
     StickerMessage,
     TextSendMessage,
-    Sender,            # 👈 新增：使用 Sender 來指定顯示名稱
+    Sender,
 )
 
 # -------- OpenAI (新版 SDK) --------
@@ -38,7 +38,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # ✅ 給 GAS 用的 Web App URL（exec）
 GAS_LINE_LOG_URL = os.environ.get(
     "GAS_LINE_LOG_URL",
-    "https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec"
+    "https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec",
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -102,30 +102,24 @@ def get_line_user_routing(line_user_id: str):
 def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -> bool:
     """
     決定這一則文字事件，是否要由小潔自動回覆。
-
-    條件：
-      1) bot_mode == auto_ai
-      2) 事件時間 >= last_mode_at_ms（如果有）
-      3) 事件與現在時間差 <= 10 秒（避免處理太舊的重送事件）
     """
     if bot_mode != "auto_ai":
         return False
 
     if not isinstance(event_timestamp_ms, (int, float)):
-        # 理論上 LINE 都會給 timestamp，如果沒有，就保守一點：不自動回覆
         return False
 
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     delta_ms = now_ms - int(event_timestamp_ms)
 
-    # 📌 如果事件發生時間距今超過 10 秒，就當成舊事件，不自動回覆
+    # 超過 10 秒就視為舊事件，不自動回覆
     if delta_ms > 10 * 1000:
         logging.info(
             "event too old to auto-reply: delta_ms=%s (mode=%s)", delta_ms, bot_mode
         )
         return False
 
-    # 如果有 last_mode_at_ms，要求事件時間要晚於最後一次模式切換時間
+    # 如果有 last_mode_at_ms，事件時間要晚於最後一次切換模式時間
     if isinstance(last_mode_at_ms, (int, float)):
         if int(event_timestamp_ms) < int(last_mode_at_ms):
             logging.info(
@@ -141,19 +135,22 @@ def should_auto_reply_text(bot_mode: str, event_timestamp_ms, last_mode_at_ms) -
 
 def log_to_gas(body: dict):
     """
-    直接把 body 當 JSON POST 給 GAS，
-    GAS 那邊的 doPost 應該要做類似：
-      const data = JSON.parse(e.postData.contents); appLineLog(data)
+    把 body 打給 GAS 的 doPost。
+    這裡要用 { action: 'lineLog', body: {...} } 格式，
+    才會進到 Code.gs 的 appLineLog。
     """
     if not GAS_LINE_LOG_URL:
         logging.warning("GAS_LINE_LOG_URL 未設定，略過記錄 log")
         return
 
     try:
-        resp = requests.post(GAS_LINE_LOG_URL, json=body, timeout=5)
+        payload = {
+            "action": "lineLog",
+            "body": body,
+        }
+        resp = requests.post(GAS_LINE_LOG_URL, json=payload, timeout=5)
         logging.info("log_to_gas resp: %s", resp.text[:200])
     except Exception as e:
-        # 只記 log，不影響主流程
         logging.error("log_to_gas error: %s", e)
 
 
@@ -166,17 +163,7 @@ def log_from_event(
     sender: str = "user",
 ):
     """
-    統一把 LINE 的事件轉成 appLineLog 需要的 JSON 格式：
-    {
-      "event_id": "...",          # ✅ 用來做去重複
-      "line_user_id": "...",
-      "type": "text" 或 "sticker",
-      "text": "...",
-      "sticker_package_id": "...",
-      "sticker_id": "...",
-      "sender": "user" / "agent" / "bot",
-      "timestamp": "ISO8601"
-    }
+    統一把 LINE 的事件轉成 appLineLog 需要的 JSON 格式。
     """
     # user id
     try:
@@ -190,8 +177,7 @@ def log_from_event(
     except Exception:
         message_id = ""
 
-    # 🎯 同一個事件：user 跟 bot 用不同後綴
-    #   例如 "123456:user" / "123456:bot"
+    # 同一個事件：user 跟 bot 用不同後綴
     event_id = f"{message_id}:{sender}" if message_id else ""
 
     # timestamp（LINE 給的是毫秒）
@@ -219,10 +205,6 @@ def log_from_event(
 # ================== OpenAI：產生小潔回覆 ==================
 
 def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
-    """
-    呼叫 OpenAI，產生 H.R 燈藝小潔的回覆
-    （簡化版，可之後再加店家資料 / Google Sheet 等）
-    """
     if not openai_client:
         return "目前暫時無法連線到 AI 伺服器，不好意思 >_<"
 
@@ -274,7 +256,7 @@ def handle_text_message(event):
     user_text = event.message.text
     user_id = event.source.user_id
 
-    # 0) 先記錄「使用者這句話」
+    # 0) 先記錄「使用者這句話」（不管現在是不是自動小潔）
     log_from_event(
         event,
         msg_type="text",
@@ -301,16 +283,14 @@ def handle_text_message(event):
 
     if reply_text and reply_token not in invalid_tokens:
         try:
-            # 使用 Sender 讓客人端顯示「小潔 H.R 燈藝客服」
             line_bot_api.reply_message(
                 reply_token,
                 TextSendMessage(
                     text=reply_text,
                     sender=Sender(
                         name="小潔 H.R 燈藝客服",
-                        # icon_url="https://你的小潔頭像網址"  # 如果有獨立小潔頭像可以在這裡補
-                    )
-                )
+                    ),
+                ),
             )
         except Exception as e:
             logging.error("回覆文字訊息失敗: %s", e)
@@ -323,6 +303,7 @@ def handle_text_message(event):
                 bot_mode, last_mode_at_ms, event_ms, should_reply
             )
 
+    # 3) 如果真的有產生小潔回覆，再額外記錄一筆 bot 訊息
     if reply_text:
         log_from_event(
             event,
@@ -340,6 +321,7 @@ def handle_sticker_message(event):
     sticker_id = event.message.sticker_id
     user_id = event.source.user_id
 
+    # 先查 routing
     bot_mode, owner_agent_id, last_mode_at_ms = get_line_user_routing(user_id)
     event_ms = getattr(event, "timestamp", None)
 
@@ -363,9 +345,8 @@ def handle_sticker_message(event):
                     text=reply_text,
                     sender=Sender(
                         name="小潔 H.R 燈藝客服",
-                        # icon_url="https://你的小潔頭像網址"
-                    )
-                )
+                    ),
+                ),
             )
         except Exception as e:
             logging.error("回覆貼圖訊息失敗: %s", e)
@@ -378,6 +359,7 @@ def handle_sticker_message(event):
                 bot_mode, last_mode_at_ms, event_ms, should_reply
             )
 
+    # 記錄使用者這張貼圖
     log_from_event(
         event,
         msg_type="sticker",
@@ -387,6 +369,7 @@ def handle_sticker_message(event):
         sender="user",
     )
 
+    # 如果有回覆文字，再記錄一筆 bot 訊息
     if reply_text:
         log_from_event(
             event,
