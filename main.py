@@ -1,6 +1,8 @@
 import os
 import logging
 from datetime import datetime, timezone
+import json
+import urllib.parse
 
 import requests
 from flask import Flask, request, abort
@@ -11,7 +13,9 @@ from linebot.models import (
     MessageEvent,
     TextMessage,
     StickerMessage,
+    PostbackEvent,
     TextSendMessage,
+    FlexSendMessage,
     Sender,
 )
 
@@ -35,11 +39,15 @@ if not CHANNEL_SECRET or not CHANNEL_ACCESS_TOKEN:
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# ✅ 給 GAS 用的 Web App URL（exec）
+# ✅ 既有：給 GAS 用的 Web App URL（exec）— routing / line log 都用這個
 GAS_LINE_LOG_URL = os.environ.get(
     "GAS_LINE_LOG_URL",
     "https://script.google.com/macros/s/AKfycbyQKpoVWZXTwksDyV5qIso1yMKEz1yQrQhuIfMfunNsgo7rtfN2eWWW_7YKV6rbl4Y8iw/exec",
 )
+
+# ✅ 新增：booking 確認（更新 Reservations 狀態）用的 GAS URL
+# 若你 bookingConfirmByReservationId 也寫在同一支 GAS，就不用另外設 GAS_BOOKING_URL
+GAS_BOOKING_URL = os.environ.get("GAS_BOOKING_URL", GAS_LINE_LOG_URL)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -210,6 +218,25 @@ def log_from_event(
     log_to_gas(body)
 
 
+def log_postback_event(line_user_id: str, data: str, sender: str = "user"):
+    """
+    記錄 postback（不一定每個專案都要，但建議留一筆可追查）
+    """
+    try:
+        ts_iso = datetime.now(timezone.utc).isoformat()
+        body = {
+            "event_id": f"postback:{int(datetime.now(timezone.utc).timestamp()*1000)}:{sender}",
+            "line_user_id": line_user_id or "",
+            "type": "postback",
+            "text": data or "",
+            "sender": sender,
+            "timestamp": ts_iso,
+        }
+        log_to_gas(body)
+    except Exception as e:
+        logging.error("log_postback_event error: %s", e)
+
+
 # ================== OpenAI：產生小潔回覆 ==================
 
 def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
@@ -240,13 +267,112 @@ def generate_reply_from_openai(user_text: str, user_id: str = "") -> str:
         return "目前系統有點忙不過來，我可能晚一點才有辦法幫你詳細回覆 QQ"
 
 
+# ================== Booking 確認：postback → GAS 更新 Reservations.status ==================
+
+def parse_confirm_reservation_id(data: str) -> str:
+    """
+    支援格式：
+      1) CONFIRM|R-xxxx
+      2) action=confirm&rid=R-xxxx
+      3) JSON: {"action":"confirm","reservation_id":"R-xxxx"}
+    """
+    if not data:
+        return ""
+
+    s = data.strip()
+
+    if s.startswith("CONFIRM|"):
+        return s.split("|", 1)[1].strip()
+
+    # querystring style
+    if "rid=" in s or "reservation_id=" in s:
+        try:
+            qs = urllib.parse.parse_qs(s, keep_blank_values=True)
+            rid = (qs.get("rid") or qs.get("reservation_id") or [""])[0]
+            return (rid or "").strip()
+        except Exception:
+            pass
+
+    # json
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            rid = obj.get("rid") or obj.get("reservation_id") or ""
+            return str(rid).strip()
+    except Exception:
+        pass
+
+    return ""
+
+
+def confirm_booking_in_gas(reservation_id: str, line_user_id: str):
+    """
+    呼叫 GAS：bookingConfirmByReservationId
+    回傳 dict（盡量解析 json）
+    """
+    if not GAS_BOOKING_URL:
+        return {"ok": False, "error": "GAS_BOOKING_URL_MISSING"}
+
+    payload = {
+        "action": "bookingConfirmByReservationId",
+        "body": {
+            "reservation_id": reservation_id,
+            "line_user_id": line_user_id or "",
+        },
+    }
+
+    try:
+        resp = requests.post(GAS_BOOKING_URL, json=payload, timeout=8)
+        text = resp.text or ""
+        logging.info("confirm_booking_in_gas status=%s body=%s", resp.status_code, text[:200])
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+        return {"ok": False, "error": "GAS_NON_JSON_RESPONSE", "raw": text[:500]}
+    except Exception as e:
+        return {"ok": False, "error": "GAS_REQUEST_FAILED", "message": str(e)}
+
+
+def make_confirmed_flex(reservation_id: str, already: bool = False):
+    title = "已確認到店" if not already else "已確認過了"
+    body_lines = [
+        f"預約編號：{reservation_id}",
+        "收到～若需要改期或取消，直接跟我們說一聲就好。",
+    ]
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {"type": "text", "text": title, "weight": "bold", "size": "lg"},
+                {"type": "text", "text": "\n".join(body_lines), "margin": "md", "wrap": True},
+            ],
+        },
+    }
+
+
 # ================== LINE Webhook 入口 ==================
+
+@app.route("/api/ping", methods=["GET"])
+def api_ping():
+    return {
+        "ok": True,
+        "has_line_secret": bool(CHANNEL_SECRET),
+        "has_line_token": bool(CHANNEL_ACCESS_TOKEN),
+        "has_gas_line_log_url": bool(GAS_LINE_LOG_URL),
+        "has_gas_booking_url": bool(GAS_BOOKING_URL),
+    }
+
 
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-    logging.info("Request body: " + body)
+    logging.info("Request body (head200): %s", body[:200])
 
     try:
         handler.handle(body, signature)
@@ -255,6 +381,69 @@ def callback():
         abort(400)
 
     return "OK"
+
+
+# ================== 事件處理：Postback（確認到店） ==================
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    user_id = ""
+    try:
+        user_id = event.source.user_id
+    except Exception:
+        user_id = ""
+
+    data = ""
+    try:
+        data = event.postback.data or ""
+    except Exception:
+        data = ""
+
+    logging.info("postback from %s data=%s", user_id, data)
+    log_postback_event(user_id, data, sender="user")
+
+    rid = parse_confirm_reservation_id(data)
+    if not rid:
+        # 不是我們要的 postback，就略過（避免影響你其他功能）
+        return
+
+    # ✅ 呼叫 GAS 更新 Reservations
+    res = confirm_booking_in_gas(rid, user_id)
+
+    if res.get("ok") is True:
+        already = bool(res.get("alreadyConfirmed"))
+        flex = FlexSendMessage(
+            alt_text="已確認到店",
+            contents=make_confirmed_flex(rid, already=already)
+        )
+
+        try:
+            line_bot_api.reply_message(
+                event.reply_token,
+                [
+                    TextSendMessage(
+                        text="收到，我已幫您把這筆預約標記為「已確認到店」。",
+                        sender=Sender(name="小潔 H.R 燈藝客服"),
+                    ),
+                    flex,
+                ],
+            )
+        except Exception as e:
+            logging.error("reply postback success failed: %s", e)
+        return
+
+    # ✅ 失敗也要回覆（讓你知道 webhook 有進來）
+    logging.error("confirm_booking_in_gas failed: %s", res)
+    try:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                text="我有收到您的確認，但系統更新狀態時出了點狀況。麻煩您直接回覆我們『已確認到店』，我會請客服幫您處理。",
+                sender=Sender(name="小潔 H.R 燈藝客服"),
+            ),
+        )
+    except Exception as e:
+        logging.error("reply postback failed failed: %s", e)
 
 
 # ================== 事件處理：文字訊息 ==================
@@ -393,4 +582,5 @@ def handle_sticker_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    logging.info("Booting... port=%s has_gas_booking_url=%s", port, bool(GAS_BOOKING_URL))
     app.run(host="0.0.0.0", port=port)
