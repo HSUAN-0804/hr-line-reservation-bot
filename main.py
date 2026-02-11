@@ -411,35 +411,44 @@ def handle_postback(event):
     res = confirm_booking_in_gas(rid, user_id)
 
     if res.get("ok") is True:
-    already = bool(res.get("alreadyConfirmed"))
+        already = bool(res.get("alreadyConfirmed"))
 
-    if already:
-        # 第二次以後：只回一句，不再丟 Flex
+        # ✅ 第二次（含之後）完全不回覆（靜默）
+        if already:
+            return
+
+        flex = FlexSendMessage(
+            alt_text="已確認到店",
+            contents=make_confirmed_flex(rid, already=False)
+        )
+
+        try:
+            line_bot_api.reply_message(
+                event.reply_token,
+                [
+                    TextSendMessage(
+                        text="收到，我已幫您把這筆預約標記為「已確認到店」。",
+                        sender=Sender(name="小潔 H.R 燈藝客服"),
+                    ),
+                    flex,
+                ],
+            )
+        except Exception as e:
+            logging.error("reply postback success failed: %s", e)
+        return
+
+    # ✅ 失敗也要回覆（讓你知道 webhook 有進來）
+    logging.error("confirm_booking_in_gas failed: %s", res)
+    try:
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                text="這筆預約已經確認過囉 ✅ 明天見～",
+                text="我有收到您的確認，但系統更新狀態時出了點狀況。麻煩您直接回覆我們『已確認到店』，我會請客服幫您處理。",
                 sender=Sender(name="小潔 H.R 燈藝客服"),
             ),
         )
-        return
-
-    # 第一次：回文字＋Flex
-    flex = FlexSendMessage(
-        alt_text="已確認到店",
-        contents=make_confirmed_flex(rid, already=False)
-    )
-    line_bot_api.reply_message(
-        event.reply_token,
-        [
-            TextSendMessage(
-                text="收到，我已幫您把這筆預約標記為「已確認到店」。",
-                sender=Sender(name="小潔 H.R 燈藝客服"),
-            ),
-            flex
-        ],
-    )
-    return
+    except Exception as e:
+        logging.error("reply postback failed failed: %s", e)
 
 
 # ================== 事件處理：文字訊息 ==================
@@ -580,5 +589,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logging.info("Booting... port=%s has_gas_booking_url=%s", port, bool(GAS_BOOKING_URL))
     app.run(host="0.0.0.0", port=port)
-
-
