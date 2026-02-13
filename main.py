@@ -507,7 +507,7 @@ def handle_text_message(event):
                     logging.error("reply CONFIRM text failed failed: %s", e)
                 return
 
-# 1) 查 routing
+    # 1) 查 routing
     bot_mode, owner_agent_id, last_mode_at_ms = get_line_user_routing(user_id)
     event_ms = getattr(event, "timestamp", None)
 
