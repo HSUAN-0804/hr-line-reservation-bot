@@ -466,7 +466,48 @@ def handle_text_message(event):
         sender="user",
     )
 
-    # 1) 查 routing
+    
+    # ✅ 支援使用文字指令確認到店（避免 postback 沒進 webhook 時無反應）
+    # 按鈕若改成 message: "CONFIRM|R-xxxx" 也能更新狀態 + 第2次靜默
+    if isinstance(user_text, str) and user_text.strip().startswith("CONFIRM|"):
+        rid = parse_confirm_reservation_id(user_text.strip())
+        if rid:
+            res = confirm_booking_in_gas(rid, user_id)
+            if res.get("ok") is True:
+                if bool(res.get("alreadyConfirmed")):
+                    return
+                flex = FlexSendMessage(
+                    alt_text="已確認到店",
+                    contents=make_confirmed_flex(rid, already=False)
+                )
+                try:
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        [
+                            TextSendMessage(
+                                text="收到，我已幫您把這筆預約標記為「已確認到店」。",
+                                sender=Sender(name="小潔 H.R 燈藝客服"),
+                            ),
+                            flex,
+                        ],
+                    )
+                except Exception as e:
+                    logging.error("reply CONFIRM text failed: %s", e)
+                return
+            else:
+                try:
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(
+                            text="我有收到您的確認，但系統更新狀態時出了點狀況。麻煩您直接回覆我們『已確認到店』，我會請客服幫您處理。",
+                            sender=Sender(name="小潔 H.R 燈藝客服"),
+                        ),
+                    )
+                except Exception as e:
+                    logging.error("reply CONFIRM text failed failed: %s", e)
+                return
+
+# 1) 查 routing
     bot_mode, owner_agent_id, last_mode_at_ms = get_line_user_routing(user_id)
     event_ms = getattr(event, "timestamp", None)
 
