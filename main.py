@@ -337,7 +337,7 @@ def confirm_booking_in_gas(reservation_id: str, line_user_id: str):
 
 
 def make_confirmed_flex(reservation_id: str, already: bool = False):
-    title = "已確認到店" if not already else "已確認過了"
+    title = "確認會到店" if not already else "已確認過了"
     body_lines = [
         f"預約編號：{reservation_id}",
         "收到～若需要改期或取消，直接跟我們說一聲就好。",
@@ -426,9 +426,9 @@ def handle_postback(event):
             line_bot_api.reply_message(
                 event.reply_token,
                 [
-                    TextSendMessage(
-                        text="收到，我已幫您把這筆預約標記為「已確認到店」。",
+                    text="收到，我已幫您把這筆預約標記為「確認會到店」。",
                         sender=Sender(name="小潔 H.R 燈藝客服"),
+                        text="
                     ),
                     flex,
                 ],
@@ -485,7 +485,7 @@ def handle_text_message(event):
                         event.reply_token,
                         [
                             TextSendMessage(
-                                text="收到，我已幫您把這筆預約標記為「已確認到店」。",
+                                text="收到，我已幫您把這筆預約標記為「確認會到店」。",
                                 sender=Sender(name="小潔 H.R 燈藝客服"),
                             ),
                             flex,
@@ -630,3 +630,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logging.info("Booting... port=%s has_gas_booking_url=%s", port, bool(GAS_BOOKING_URL))
     app.run(host="0.0.0.0", port=port)
+
